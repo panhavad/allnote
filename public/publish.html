@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Published note</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="/js/theme.js"></script>
+  <script type="module" src="/js/publish.js"></script>
+</head>
+<body>
+  <div class="pub">
+    <header class="pub-head">
+      <a class="brand" href="/"><img src="/favicon.svg" alt=""><span class="app-name">AllNote</span></a>
+      <button class="icon-btn" id="btn-theme" title="Toggle dark mode"><i data-icon="moon"></i></button>
+    </header>
+    <div id="pub-loading" class="muted">Loading…</div>
+
+    <form id="pin-form" class="pin-card hidden">
+      <i data-icon="lock" data-size="40"></i>
+      <h2>This page is protected</h2>
+      <p class="muted">Enter the PIN you received to view it.</p>
+      <div id="pin-error" class="alert error hidden"></div>
+      <input name="pin" type="password" inputmode="text" autocomplete="off" maxlength="12" required autofocus>
+      <button class="btn primary block">Unlock</button>
+    </form>
+
+    <div id="pub-error" class="pin-card hidden"><h2>Not found</h2><p class="muted" id="pub-error-msg"></p></div>
+
+    <article id="pub-note" class="hidden">
+      <h1 class="pub-title" id="pub-title"></h1>
+      <div class="pub-meta" id="pub-meta"></div>
+      <div class="markdown" id="pub-body"></div>
+    </article>
+  </div>
+</body>
+</html>
