@@ -48,6 +48,21 @@ export function plainText(md) {
 
 export const wordCount = (md) => (plainText(md).match(/\S+/g) || []).length;
 
+// Top-level markdown blocks with source offsets (token raws concatenate back to the exact source).
+const blockLexer = new Marked({ gfm: true, breaks: true });
+export function splitBlocks(src) {
+  const out = [];
+  let pos = 0;
+  for (const t of blockLexer.lexer(String(src || ''))) {
+    if (t.type !== 'space') {
+      const text = t.raw.replace(/\n+$/, '');
+      if (text.trim()) out.push({ start: pos, end: pos + text.length });
+    }
+    pos += t.raw.length;
+  }
+  return out;
+}
+
 // Toggle the n-th task list checkbox in the markdown source.
 export function toggleTask(md, index) {
   let fence = false;

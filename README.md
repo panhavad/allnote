@@ -8,7 +8,7 @@ Deploys with one `docker compose up` and **automatically redeploys itself whenev
 
 | Area | What you get |
 | --- | --- |
-| Writing | Markdown editor with toolbar & shortcuts, edit / split / reading modes, list auto-continue, checklists you can tick in the preview, tables, code, `==highlight==`, callouts (`> [!tip]`), dark/light theme |
+| Writing | **Live preview** (notes stay formatted; click any paragraph, list or table to edit it in place), plus source / split / reading modes, toolbar & shortcuts, list auto-continue, checklists you can tick in the preview, tables, code, `==highlight==`, callouts (`> [!tip]`), dark/light theme |
 | Linking (Obsidian) | `[[Note]]`, `[[Note\|alias]]`, `[[Note#Heading]]`, `![[Note]]` embeds, `[[` autocomplete, click a missing link to create the note, backlinks, outgoing links, outline, interactive graph view (notes + tags) |
 | Organising (Evernote) | Nested notebooks (`Work/Projects`), `#tags` (nested `#work/alpha`), pinned notes, trash & restore, daily notes, quick switcher (`Ctrl+K`), full-text search with `tag:` and `notebook:` filters |
 | Collaboration | Share a note by email as *Can edit* / *Can view*, live updates over Server-Sent Events, presence avatars (who is viewing/editing), automatic 3-way merge of concurrent edits in the browser, version history with restore |
@@ -146,7 +146,7 @@ Open a note → **Publish** → toggle on. Copy the link (`/p/<link>`, customisa
 | --- | --- |
 | `Ctrl/Cmd + K` | Quick switcher (find or create a note) |
 | `Alt + N` | New note |
-| `Ctrl/Cmd + E` | Toggle reading view |
+| `Ctrl/Cmd + E` | Toggle live preview / reading view |
 | `Ctrl/Cmd + S` | Save now |
 | `Ctrl/Cmd + B` / `I` | Bold / italic |
 | `Ctrl/Cmd + Enter` | Toggle checklist on line |

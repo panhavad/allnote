@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>AllNote</title>
   <link rel="icon" href="/favicon.svg">
   <link rel="stylesheet" href="/css/app.css">
@@ -51,80 +51,75 @@
   <!-- ============ App ============ -->
   <div id="app" class="app hidden">
     <aside class="sidebar" id="sidebar">
-      <div class="sb-head">
-        <div class="brand"><img src="/favicon.svg" alt=""><span class="app-name">AllNote</span></div>
+      <div class="sb-tabs">
+        <button class="icon-btn" data-view="files" title="Files"><i data-icon="folder"></i></button>
+        <button class="icon-btn" data-view="search" title="Search"><i data-icon="search"></i></button>
+        <button class="icon-btn" data-view="tags" title="Tags"><i data-icon="hash"></i></button>
+        <span class="spacer"></span>
+        <button class="icon-btn" id="btn-collapse" title="Hide sidebar"><i data-icon="panelLeft"></i></button>
       </div>
-      <button class="btn primary block" id="btn-new"><i data-icon="plus"></i> New note</button>
-      <button class="sb-search" id="btn-switcher"><i data-icon="search" data-size="16"></i><span>Quick switcher</span><kbd>Ctrl K</kbd></button>
-      <nav class="sb-nav" id="nav-main">
-        <a href="#" data-filter="all"><i data-icon="notes"></i><span>All notes</span><em data-count="all"></em></a>
-        <a href="#" data-filter="pinned"><i data-icon="pin"></i><span>Pinned</span><em data-count="pinned"></em></a>
-        <a href="#" data-action="daily"><i data-icon="calendar"></i><span>Today's note</span></a>
-        <a href="#" data-filter="shared"><i data-icon="users"></i><span>Shared with me</span><em data-count="shared"></em></a>
-        <a href="#" data-filter="published"><i data-icon="globe"></i><span>Published</span><em data-count="published"></em></a>
-        <a href="#" data-action="graph"><i data-icon="graph"></i><span>Graph view</span></a>
-        <a href="#" data-filter="trash"><i data-icon="trash"></i><span>Trash</span><em data-count="trash"></em></a>
-      </nav>
-      <div class="sb-section">
-        <div class="sb-title"><span>Notebooks</span><button class="icon-btn xs" id="btn-new-notebook" title="New notebook"><i data-icon="plus" data-size="14"></i></button></div>
-        <div id="nav-notebooks" class="tree"></div>
+
+      <div class="sb-panel" id="panel-files">
+        <div class="sb-tools">
+          <button class="icon-btn sm" id="btn-new" title="New note (Alt+N)"><i data-icon="newnote" data-size="17"></i></button>
+          <button class="icon-btn sm" id="btn-new-folder" title="New folder"><i data-icon="newfolder" data-size="17"></i></button>
+          <button class="icon-btn sm" id="btn-daily" title="Today's note"><i data-icon="calendar" data-size="17"></i></button>
+          <button class="icon-btn sm" id="btn-graph" title="Graph view"><i data-icon="graph" data-size="17"></i></button>
+          <button class="icon-btn sm" id="btn-sort" title="Sort"><i data-icon="sort" data-size="17"></i></button>
+          <button class="icon-btn sm" id="btn-collapse-all" title="Collapse all"><i data-icon="collapse" data-size="17"></i></button>
+        </div>
+        <nav class="tree" id="tree"></nav>
       </div>
-      <div class="sb-section">
-        <div class="sb-title"><span>Tags</span></div>
-        <div id="nav-tags" class="tag-cloud"></div>
+
+      <div class="sb-panel hidden" id="panel-search">
+        <div class="search-box"><i data-icon="search" data-size="15"></i><input id="search" type="search" placeholder="Search…" autocomplete="off"></div>
+        <div id="search-results" class="results"></div>
       </div>
+
+      <div class="sb-panel hidden" id="panel-tags">
+        <nav class="tree" id="tag-list"></nav>
+      </div>
+
       <div class="sb-foot">
-        <button class="user-chip" id="btn-account" title="Account & security"><span class="avatar" id="me-avatar"></span><span class="user-name" id="me-name"></span></button>
-        <button class="icon-btn" id="btn-theme" title="Toggle dark mode"><i data-icon="moon"></i></button>
-        <button class="icon-btn" id="btn-logout" title="Sign out"><i data-icon="logout"></i></button>
+        <button class="vault" id="btn-account" title="Account & security"><span id="me-avatar"></span><span class="user-name" id="me-name"></span></button>
+        <button class="icon-btn sm" id="btn-theme" title="Toggle dark mode"><i data-icon="moon" data-size="17"></i></button>
+        <button class="icon-btn sm" id="btn-settings" title="Settings"><i data-icon="settings" data-size="17"></i></button>
+        <button class="icon-btn sm" id="btn-logout" title="Sign out"><i data-icon="logout" data-size="17"></i></button>
       </div>
     </aside>
     <div class="scrim" id="scrim"></div>
 
-    <section class="list-pane">
-      <div class="list-head">
-        <button class="icon-btn mobile-only" id="btn-menu" title="Menu"><i data-icon="menu"></i></button>
-        <h2 id="list-title">All notes</h2>
-        <span id="list-count" class="muted"></span>
-      </div>
-      <div class="list-tools">
-        <div class="search-box"><i data-icon="search" data-size="16"></i><input id="search" type="search" placeholder="Search…  tag:work  notebook:ideas" autocomplete="off"></div>
-        <select id="sort" title="Sort">
-          <option value="updated">Last edited</option>
-          <option value="created">Created</option>
-          <option value="title">Title</option>
-        </select>
-      </div>
-      <div id="note-list" class="note-list"></div>
-    </section>
-
     <main class="editor-pane" id="editor-pane">
+      <div class="tabbar">
+        <button class="icon-btn sm show-when-collapsed" id="btn-menu" title="Show sidebar"><i data-icon="panelLeft"></i></button>
+        <div class="tabs" id="tabs"></div>
+        <button class="icon-btn sm" id="btn-tab-new" title="New note"><i data-icon="plus" data-size="16"></i></button>
+      </div>
+
       <div id="empty-state" class="empty-state">
         <img src="/favicon.svg" alt="" width="56">
-        <h3>No note selected</h3>
-        <p class="muted">Pick a note or create a new one.</p>
-        <div class="shortcuts">
-          <span><kbd>Ctrl</kbd>+<kbd>K</kbd> quick switcher</span>
-          <span><kbd>Alt</kbd>+<kbd>N</kbd> new note</span>
-          <span><kbd>Ctrl</kbd>+<kbd>E</kbd> edit / read</span>
-          <span><kbd>[[</kbd> link a note</span>
+        <h3>No file is open</h3>
+        <div class="empty-actions">
+          <a href="#" id="empty-new">Create new note <kbd>Alt N</kbd></a>
+          <a href="#" id="empty-switch">Go to file <kbd>Ctrl K</kbd></a>
+          <a href="#" id="empty-daily">Open today's note</a>
         </div>
       </div>
 
       <div id="editor" class="editor hidden">
         <div class="ed-top">
-          <button class="icon-btn mobile-only" id="btn-back" title="Back"><i data-icon="back"></i></button>
-          <div class="crumb"><i data-icon="folder" data-size="16"></i><input id="ed-notebook" list="notebook-options" placeholder="No notebook" autocomplete="off"><datalist id="notebook-options"></datalist></div>
+          <div class="crumb"><i data-icon="folder" data-size="15"></i><input id="ed-notebook" list="notebook-options" placeholder="No folder" autocomplete="off"><datalist id="notebook-options"></datalist></div>
           <div class="presence" id="presence"></div>
           <div class="ed-actions">
             <div class="seg" id="mode-seg">
-              <button data-mode="edit" title="Edit"><i data-icon="edit" data-size="16"></i></button>
+              <button data-mode="live" title="Live preview: formatted and editable"><i data-icon="edit" data-size="16"></i></button>
+              <button data-mode="edit" title="Source mode (markdown)"><i data-icon="code" data-size="16"></i></button>
               <button data-mode="split" title="Split view"><i data-icon="split" data-size="16"></i></button>
               <button data-mode="preview" title="Reading view"><i data-icon="eye" data-size="16"></i></button>
             </div>
             <button class="icon-btn" id="btn-pin" title="Pin note"><i data-icon="pin"></i></button>
-            <button class="btn sm" id="btn-share"><i data-icon="users" data-size="16"></i> Share</button>
-            <button class="btn sm" id="btn-publish"><i data-icon="globe" data-size="16"></i> Publish</button>
+            <button class="icon-btn" id="btn-share" title="Share"><i data-icon="users"></i></button>
+            <button class="icon-btn" id="btn-publish" title="Publish to the web"><i data-icon="globe"></i></button>
             <button class="icon-btn" id="btn-history" title="Version history"><i data-icon="clock"></i></button>
             <button class="icon-btn" id="btn-more" title="More"><i data-icon="more"></i></button>
             <button class="icon-btn" id="btn-info" title="Toggle info panel"><i data-icon="panel"></i></button>
@@ -156,6 +151,7 @@
             <textarea id="ed-text" spellcheck="true" placeholder="Start writing…  Use [[ to link notes, #tags, - [ ] for tasks"></textarea>
           </div>
           <article id="ed-preview" class="markdown"></article>
+          <article id="ed-live" class="markdown live"><div class="lp-before"></div><textarea class="lp-editor" hidden spellcheck="true" aria-label="Edit block"></textarea><div class="lp-after"></div><div class="lp-tail"></div></article>
         </div>
         <div class="ed-status">
           <span id="st-save"></span>

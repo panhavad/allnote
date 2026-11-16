@@ -1,7 +1,7 @@
 import { get, post, put, del, clientId } from './api.js';
 import { hydrateIcons, icon } from './icons.js';
 import {
-  renderInto, extractTags, extractLinks, extractHeadings, plainText, wordCount, toggleTask, escapeHtml as esc,
+  renderInto, extractTags, extractLinks, extractHeadings, plainText, wordCount, toggleTask, splitBlocks, escapeHtml as esc,
 } from './markdown.js';
 import { merge3, mapOffset } from './merge.js';
 import { createGraph } from './graph.js';
@@ -14,10 +14,13 @@ const S = {
   config: {},
   me: null,
   notes: new Map(),
-  filter: { type: 'all', value: null },
+  view: localStorage.getItem('allnote-view') || 'files',
+  expanded: new Set(JSON.parse(localStorage.getItem('allnote-expanded') || '["@pinned"]')),
+  tabs: JSON.parse(localStorage.getItem('allnote-tabs') || '[]'),
+  activeFolder: '',
   query: '',
-  sort: localStorage.getItem('allnote-sort') || 'updated',
-  mode: localStorage.getItem('allnote-mode') || 'split',
+  sort: localStorage.getItem('allnote-sort') || 'title',
+  mode: localStorage.getItem('allnote-mode') || 'live',
   currentId: null,
   sync: null, // { id, base, baseTitle, version, dirty, saving, timer }
   presence: new Map(), // noteId -> Map(key -> { user, state, ts })
@@ -96,21 +99,22 @@ async function startApp(user) {
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
   Object.assign(el, {
-    app: $('#app'), list: $('#note-list'), title: $('#ed-title'), text: $('#ed-text'), preview: $('#ed-preview'),
+    app: $('#app'), title: $('#ed-title'), text: $('#ed-text'), preview: $('#ed-preview'),
     notebook: $('#ed-notebook'), body: $('#ed-body'), editor: $('#editor'), empty: $('#empty-state'), info: $('#info-pane'),
-    search: $('#search'), banner: $('#ed-banner'), save: $('#st-save'),
+    banner: $('#ed-banner'), save: $('#st-save'),
   });
   renderMe();
   el.info.classList.toggle('collapsed', localStorage.getItem('allnote-info') === '0' || !isWide());
-  $('#sort').value = S.sort;
+  el.app.classList.toggle('sb-collapsed', localStorage.getItem('allnote-sidebar') === '0');
   await loadNotes();
   connectEvents();
   renderAll();
   route();
+  if (!S.currentId && S.tabs.length) openNote(S.tabs[S.tabs.length - 1]);
 }
 
 function renderMe() {
-  $('#me-avatar').outerHTML = `<span id="me-avatar">${avatarHtml(S.me)}</span>`;
+  $('#me-avatar').innerHTML = avatarHtml(S.me, 'sm');
   $('#me-name').textContent = S.me.name;
 }
 
@@ -262,64 +266,91 @@ function scheduleRender(delay = 120) {
 }
 function renderAll() {
   clearTimeout(renderTimer);
-  renderSidebar();
-  renderList();
+  renderPanel();
+  renderTabs();
   renderInfo();
 }
 
-const FILTER_NAMES = { all: 'All notes', pinned: 'Pinned', shared: 'Shared with me', published: 'Published', trash: 'Trash' };
+const SORTS = {
+  title: (a, b) => (a.title || 'Untitled').localeCompare(b.title || 'Untitled', undefined, { numeric: true }),
+  updated: (a, b) => b.updatedAt - a.updatedAt,
+  created: (a, b) => b.createdAt - a.createdAt,
+};
+const saveExpanded = () => localStorage.setItem('allnote-expanded', JSON.stringify([...S.expanded]));
 
-function inFilter(n, f = S.filter) {
-  if (f.type === 'trash') return n.trashed && n.role === 'owner';
-  if (n.trashed) return false;
-  switch (f.type) {
-    case 'pinned': return n.pinned;
-    case 'shared': return n.role !== 'owner';
-    case 'published': return Boolean(n.publication);
-    case 'notebook': return n.role === 'owner' && (n.notebook === f.value || n.notebook.startsWith(`${f.value}/`));
-    case 'tag': return (n._tags || extractTags(n.content).map((t) => t.toLowerCase())).some((t) => t === f.value || t.startsWith(`${f.value}/`));
-    default: return true;
-  }
+function setView(view) {
+  S.view = view;
+  localStorage.setItem('allnote-view', view);
+  renderPanel();
+  if (view === 'search') setTimeout(() => $('#search').focus(), 0);
 }
 
-function renderSidebar() {
-  const ix = index();
-  const all = [...S.notes.values()];
-  const counts = {
-    all: all.filter((n) => inFilter(n, { type: 'all' })).length,
-    pinned: all.filter((n) => inFilter(n, { type: 'pinned' })).length,
-    shared: all.filter((n) => inFilter(n, { type: 'shared' })).length,
-    published: all.filter((n) => inFilter(n, { type: 'published' })).length,
-    trash: all.filter((n) => inFilter(n, { type: 'trash' })).length,
-  };
-  $$('#nav-main [data-count]').forEach((e) => { e.textContent = counts[e.dataset.count] || ''; });
-  $$('#nav-main [data-filter]').forEach((a) => a.classList.toggle('active', S.filter.type === a.dataset.filter));
+function searchFor(query) {
+  S.query = query;
+  $('#search').value = query;
+  el.app.classList.remove('sb-collapsed');
+  el.app.classList.add('nav-open');
+  setView('search');
+}
 
-  // notebook tree
-  const tree = {};
-  for (const n of all) {
-    if (n.trashed || n.role !== 'owner' || !n.notebook) continue;
-    let node = tree;
-    let path = '';
-    for (const part of n.notebook.split('/').filter(Boolean)) {
-      path = path ? `${path}/${part}` : part;
-      node[part] ??= { path, count: 0, children: {} };
-      node[part].count++;
-      node = node[part].children;
-    }
-  }
-  const nbHtml = (node, depth) => Object.keys(node).sort((a, b) => a.localeCompare(b)).map((k) => {
-    const it = node[k];
-    const active = S.filter.type === 'notebook' && S.filter.value === it.path;
-    return `<a href="#" data-notebook="${esc(it.path)}" class="${active ? 'active' : ''}" style="padding-left:${8 + depth * 14}px">${icon('folder', 16)}<span>${esc(k)}</span><button class="icon-btn xs tree-act" data-rename="${esc(it.path)}" title="Rename notebook">${icon('edit', 13)}</button><em>${it.count}</em></a>${nbHtml(it.children, depth + 1)}`;
-  }).join('');
-  $('#nav-notebooks').innerHTML = nbHtml(tree, 0) || '<div class="muted" style="padding:2px 10px;font-size:13px">No notebooks yet</div>';
-  const nbs = [...new Set(all.filter((n) => n.role === 'owner' && n.notebook).map((n) => n.notebook))].sort();
+function renderPanel() {
+  $$('.sb-tabs [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === S.view));
+  ['files', 'search', 'tags'].forEach((v) => $(`#panel-${v}`).classList.toggle('hidden', v !== S.view));
+  const nbs = [...new Set([...S.notes.values()].filter((n) => n.role === 'owner' && n.notebook).map((n) => n.notebook))].sort();
   $('#notebook-options').innerHTML = nbs.map((n) => `<option value="${esc(n)}">`).join('');
+  if (S.view === 'files') renderTree();
+  else if (S.view === 'search') renderSearch();
+  else renderTags();
+}
 
-  const tags = [...ix.tags.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  $('#nav-tags').innerHTML = tags.map(([t, c]) => `<a href="#" class="chip ${S.filter.type === 'tag' && S.filter.value === t ? 'active' : ''}" data-tag="${esc(t)}">#${esc(t)} <em>${c}</em></a>`).join('')
-    || '<div class="muted" style="font-size:13px;padding:0 2px">Type #tag in a note</div>';
+function noteRow(n, depth) {
+  const marks = [];
+  if (n.shareCount) marks.push(`<span title="Shared">${icon('users', 13)}</span>`);
+  if (n.publication) marks.push(`<span title="Published">${icon(n.publication.hasPin ? 'lock' : 'globe', 13)}</span>`);
+  return `<a href="#" class="row note ${n.id === S.currentId ? 'active' : ''}" data-id="${n.id}" style="--d:${depth}" title="${esc(n.title || 'Untitled')}">`
+    + `<span class="label">${esc(n.title || 'Untitled')}</span>${marks.length ? `<span class="marks">${marks.join('')}</span>` : ''}</a>`;
+}
+
+function folderRow(key, label, depth, { ic, count } = {}) {
+  const open = S.expanded.has(key);
+  return `<a href="#" class="row folder ${open ? 'open' : ''} ${ic ? 'virtual' : ''}" data-folder="${esc(key)}" style="--d:${depth}">`
+    + `${icon('chevron', 14)}${ic ? icon(ic, 14) : ''}<span class="label">${esc(label)}</span>${count ? `<em>${count}</em>` : ''}</a>`;
+}
+
+function renderTree() {
+  index();
+  const sort = SORTS[S.sort] || SORTS.title;
+  const all = [...S.notes.values()];
+  const live = all.filter((n) => !n.trashed);
+  const root = { folders: {}, notes: [] };
+  for (const n of live) {
+    if (n.role !== 'owner') continue;
+    let node = root;
+    for (const part of n.notebook.split('/').filter(Boolean)) {
+      node.folders[part] ??= { folders: {}, notes: [] };
+      node = node.folders[part];
+    }
+    node.notes.push(n);
+  }
+  const out = [];
+  const virtual = (key, label, ic, list) => {
+    if (!list.length) return;
+    out.push(folderRow(key, label, 0, { ic, count: list.length }));
+    if (S.expanded.has(key)) list.sort(sort).forEach((n) => out.push(noteRow(n, 1)));
+  };
+  virtual('@pinned', 'Pinned', 'pin', live.filter((n) => n.pinned));
+  const walk = (node, path, depth) => {
+    for (const k of Object.keys(node.folders).sort((x, y) => x.localeCompare(y))) {
+      const p = path ? `${path}/${k}` : k;
+      out.push(folderRow(p, k, depth));
+      if (S.expanded.has(p)) walk(node.folders[k], p, depth + 1);
+    }
+    node.notes.sort(sort).forEach((n) => out.push(noteRow(n, depth)));
+  };
+  walk(root, '', 0);
+  virtual('@shared', 'Shared with me', 'users', live.filter((n) => n.role !== 'owner'));
+  virtual('@trash', 'Trash', 'trash', all.filter((n) => n.trashed && n.role === 'owner'));
+  $('#tree').innerHTML = out.join('') || '<div class="panel-empty">No notes yet.<br>Create one with the <b>New note</b> button.</div>';
 }
 
 function parseQuery(q) {
@@ -362,61 +393,56 @@ function snippet(n, q) {
   const start = Math.max(0, i - 50);
   let s = esc((start ? '…' : '') + text.slice(start, start + 180));
   for (const t of q.terms) {
-    const re = new RegExp(esc(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const re = new RegExp(esc(t).replace(/[.*+?^${}()|[\]\\]/g, '\\/*__SEARCH_HELPERS__*/'), 'gi');
     s = s.replace(re, (m) => `<mark>${m}</mark>`);
   }
   return s;
 }
 
-function visibleNotes() {
-  index();
-  const q = S.query.trim() ? parseQuery(S.query.trim()) : null;
-  const list = [];
-  for (const n of S.notes.values()) {
-    if (!inFilter(n)) continue;
-    const score = q ? searchScore(n, q) : 0;
-    if (score < 0) continue;
-    list.push({ n, score });
-  }
-  const cmp = {
-    updated: (a, b) => b.n.updatedAt - a.n.updatedAt,
-    created: (a, b) => b.n.createdAt - a.n.createdAt,
-    title: (a, b) => (a.n.title || 'Untitled').localeCompare(b.n.title || 'Untitled'),
-  }[S.sort];
-  list.sort((a, b) => (q ? b.score - a.score : 0) || (b.n.pinned && !q) - (a.n.pinned && !q) || cmp(a, b));
-  return { list: list.map((x) => x.n), q };
-}
-
-function renderList() {
-  const { list, q } = visibleNotes();
-  let title = FILTER_NAMES[S.filter.type];
-  if (S.filter.type === 'notebook') title = S.filter.value.split('/').pop();
-  if (S.filter.type === 'tag') title = `#${S.filter.value}`;
-  $('#list-title').textContent = title;
-  $('#list-count').textContent = list.length ? `${list.length}` : '';
-  if (!list.length) {
-    el.list.innerHTML = `<div class="list-empty">${S.query ? 'No notes match your search.' : S.filter.type === 'trash' ? 'Trash is empty.' : 'No notes here yet.'}</div>`;
+function renderSearch() {
+  const qs = S.query.trim();
+  const box = $('#search-results');
+  if (!qs) {
+    box.innerHTML = '<div class="panel-empty">Search titles and content.<br>Filters: <code>tag:work</code> <code>notebook:ideas</code></div>';
     return;
   }
-  el.list.innerHTML = list.map((n) => {
-    const meta = [`<span>${timeAgo(n.updatedAt)}</span>`];
-    if (n.notebook && n.role === 'owner') meta.push(`<span class="nb">${icon('folder', 13)} ${esc(n.notebook)}</span>`);
-    if (n.shareCount) meta.push(`<span title="Shared with ${n.shareCount}">${icon('users', 13)}</span>`);
-    if (n.publication) meta.push(`<span title="Published">${icon(n.publication.hasPin ? 'lock' : 'globe', 13)}</span>`);
-    if (n.role !== 'owner') meta.push(`<span class="badge" title="Shared by ${esc(n.owner.name)}">${n.role === 'editor' ? 'can edit' : 'view only'}</span>`);
-    return `<div class="note-item ${n.id === S.currentId ? 'active' : ''}" data-id="${n.id}">
-      <h3>${n.pinned ? icon('pin', 14) : ''}<span>${esc(n.title || 'Untitled')}</span></h3>
-      <p>${snippet(n, q) || '<span class="muted">Empty note</span>'}</p>
-      <div class="meta">${meta.join('')}</div></div>`;
-  }).join('');
+  index();
+  const q = parseQuery(qs);
+  const res = [...S.notes.values()].filter((n) => !n.trashed)
+    .map((n) => ({ n, s: searchScore(n, q) }))
+    .filter((x) => x.s >= 0)
+    .sort((a, b) => b.s - a.s || b.n.updatedAt - a.n.updatedAt);
+  box.innerHTML = `<div class="res-count">${res.length} result${res.length === 1 ? '' : 's'}</div>`
+    + res.map(({ n }) => `<a href="#" class="result ${n.id === S.currentId ? 'active' : ''}" data-id="${n.id}">
+        <b>${esc(n.title || 'Untitled')}</b>${n.notebook && n.role === 'owner' ? `<span class="path">${esc(n.notebook)}</span>` : ''}
+        <small>${snippet(n, q) || 'Empty note'}</small></a>`).join('');
 }
 
-function setFilter(type, value = null) {
-  S.filter = { type, value };
-  S.query = '';
-  el.search.value = '';
-  el.app.classList.remove('nav-open', 'show-editor');
-  renderAll();
+function renderTags() {
+  const tags = [...index().tags.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  $('#tag-list').innerHTML = tags.map(([t, c]) => `<a href="#" class="row tagrow" data-tag="${esc(t)}" style="--d:0"><span class="label">#${esc(t)}</span><em>${c}</em></a>`).join('')
+    || '<div class="panel-empty">No tags yet.<br>Type <code>#tag</code> in a note.</div>';
+}
+
+function renderTabs() {
+  S.tabs = S.tabs.filter((id) => S.notes.has(id));
+  localStorage.setItem('allnote-tabs', JSON.stringify(S.tabs));
+  $('#tabs').innerHTML = S.tabs.map((id) => {
+    const n = S.notes.get(id);
+    const t = esc(n.title || 'Untitled');
+    return `<div class="tab ${id === S.currentId ? 'active' : ''}" data-tab="${id}" title="${t}"><span>${t}</span><button class="tab-x" data-close-tab="${id}" title="Close">${icon('x', 13)}</button></div>`;
+  }).join('');
+  $('#tabs .tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+async function closeTab(id) {
+  if (id === S.currentId) {
+    await flushSave();
+    closeEditor();
+    return;
+  }
+  S.tabs = S.tabs.filter((t) => t !== id);
+  renderTabs();
 }
 
 // ============================================================ editor
@@ -425,9 +451,22 @@ const canEdit = (n) => n && n.role !== 'viewer' && !n.trashed;
 async function openNote(id, { focus } = {}) {
   if (!S.notes.has(id)) return;
   if (S.currentId !== id) {
+    if (live.active) liveDeactivate();
     await flushSave();
     if (S.currentId) sendPresence(S.currentId, 'left');
     const n = S.notes.get(id);
+    if (!S.tabs.includes(id)) {
+      const at = S.tabs.indexOf(S.currentId);
+      S.tabs.splice(at < 0 ? S.tabs.length : at + 1, 0, id);
+    }
+    if (n.role === 'owner' && n.notebook) {
+      let p = '';
+      for (const part of n.notebook.split('/').filter(Boolean)) {
+        p = p ? `${p}/${part}` : part;
+        S.expanded.add(p);
+      }
+      saveExpanded();
+    }
     S.currentId = id;
     S.sync = { id, base: n.content, baseTitle: n.title, version: n.version, dirty: false, saving: false, timer: null };
     el.title.value = n.title;
@@ -439,31 +478,40 @@ async function openNote(id, { focus } = {}) {
     el.app.classList.add('has-note');
     history.replaceState(null, '', `#/note/${id}`);
     applyRoleUI();
+    renderLive(true);
     renderPreview();
     renderPresence();
     setSaveStatus('saved');
     lastPresence = { state: '', at: 0 };
     sendPresence(id, 'viewing');
   }
-  el.app.classList.add('show-editor');
   el.app.classList.remove('nav-open');
   renderAll();
   const n = S.notes.get(id);
   if (focus === 'title' && canEdit(n)) el.title.focus();
   else if (focus === 'text' && canEdit(n)) {
-    if (S.mode === 'preview') setMode('split');
+    if (S.mode === 'preview') setMode('live');
+    if (S.mode === 'live') return liveActivateEnd();
     el.text.focus();
     el.text.setSelectionRange(el.text.value.length, el.text.value.length);
   }
 }
 
 function closeEditor() {
-  if (S.currentId) sendPresence(S.currentId, 'left');
+  const id = S.currentId;
+  if (id) sendPresence(id, 'left');
+  const at = S.tabs.indexOf(id);
+  if (at >= 0) S.tabs.splice(at, 1);
   S.currentId = null;
   S.sync = null;
+  const next = S.tabs[at] ?? S.tabs[at - 1];
+  if (next && S.notes.has(next)) {
+    openNote(next);
+    return;
+  }
   el.editor.classList.add('hidden');
   el.empty.classList.remove('hidden');
-  el.app.classList.remove('show-editor', 'has-note');
+  el.app.classList.remove('has-note');
   history.replaceState(null, '', location.pathname);
   renderAll();
 }
@@ -521,13 +569,19 @@ function schedulePreview() {
 function renderPreview() {
   const n = S.notes.get(S.currentId);
   if (!n || effectiveMode(n) === 'edit') return;
+  if (effectiveMode(n) === 'live') {
+    renderLive();
+    return;
+  }
   renderInto(el.preview, el.text.value, { resolve: resolveTitle, interactiveTasks: canEdit(n) });
 }
 
 function setMode(mode) {
+  if (live.active) liveDeactivate();
   S.mode = mode;
   localStorage.setItem('allnote-mode', mode);
   applyRoleUI();
+  renderLive(true);
   renderPreview();
 }
 
@@ -640,6 +694,14 @@ function applyRemote(note) {
   const myTitle = el.title.value;
   const merged = s.dirty ? merge3(s.base, mine, note.content) : note.content;
   const title = s.dirty && myTitle !== s.baseTitle ? myTitle : note.title;
+  let liveSel = null;
+  if (merged !== mine && live.active) {
+    const cs = live.start + live.ta.selectionStart;
+    const ce = live.start + live.ta.selectionEnd;
+    liveSel = [mapOffset(mine, merged, cs), mapOffset(mine, merged, ce)];
+    live.start = mapOffset(mine, merged, live.start);
+    live.end = Math.max(live.start, mapOffset(mine, merged, live.end));
+  }
   if (merged !== mine) {
     const focused = document.activeElement === el.text;
     const a = mapOffset(mine, merged, el.text.selectionStart);
@@ -648,6 +710,12 @@ function applyRemote(note) {
     el.text.value = merged;
     if (focused) el.text.setSelectionRange(a, b);
     el.text.scrollTop = scroll;
+    if (liveSel) {
+      live.ta.value = merged.slice(live.start, live.end);
+      const clamp = (x) => Math.max(0, Math.min(x - live.start, live.ta.value.length));
+      live.ta.setSelectionRange(clamp(liveSel[0]), clamp(liveSel[1]));
+      liveAutosize();
+    }
   }
   if (title !== myTitle) el.title.value = title;
   s.base = note.content;
@@ -684,8 +752,12 @@ el.title.addEventListener('input', markDirty);
 el.title.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    if (S.mode === 'preview') setMode('split');
-    el.text.focus();
+    if (S.mode === 'preview') setMode('live');
+    if (S.mode === 'live') {
+      const first = splitBlocks(el.text.value)[0];
+      if (first) liveActivate(first.start, first.end, 0);
+      else liveActivateEnd();
+    } else el.text.focus();
   }
 });
 $('#ed-notebook').addEventListener('change', (e) => updateMeta({ notebook: e.target.value.trim().replace(/^\/+|\/+$/g, '') }));
@@ -706,7 +778,6 @@ $('#btn-share').addEventListener('click', () => openShare(S.currentId));
 $('#btn-publish').addEventListener('click', () => openPublish(S.currentId));
 $('#btn-history').addEventListener('click', () => openHistory(S.currentId));
 $('#btn-more').addEventListener('click', (e) => openMoreMenu(e.currentTarget));
-$('#btn-back').addEventListener('click', () => el.app.classList.remove('show-editor'));
 
 // preview interactions: wikilinks, tags, tasks
 document.addEventListener('click', (e) => {
@@ -716,10 +787,10 @@ document.addEventListener('click', (e) => {
     if (wl.dataset.open) return openNote(wl.dataset.open);
     return openByTitle(wl.dataset.target, wl.dataset.heading);
   }
-  const tg = e.target.closest('a.tag[data-tag], a.chip[data-tag]');
+  const tg = e.target.closest('a.tag[data-tag], a.chip[data-tag], a.tagrow[data-tag]');
   if (tg) {
     e.preventDefault();
-    setFilter('tag', tg.dataset.tag.toLowerCase());
+    searchFor(`tag:${tg.dataset.tag.toLowerCase()}`);
   }
 });
 el.preview = $('#ed-preview');
@@ -740,27 +811,271 @@ async function openByTitle(title, heading) {
   }
   await openNote(n.id);
   if (heading) {
-    const target = $$('h1,h2,h3,h4,h5,h6', el.preview).find((x) => x.textContent.trim().toLowerCase() === heading.toLowerCase());
+    const target = $('h1,h2,h3,h4,h5,h6', viewEl()).find((x) => x.textContent.trim().toLowerCase() === heading.toLowerCase());
     target?.scrollIntoView({ behavior: 'smooth' });
   }
 }
 
+// ---------------------------------------------------- live preview
+// Shows the note rendered; clicking a block swaps just that block for an editable textarea.
+// el.text stays the single source of truth; the block editor writes its slice back into it.
+const live = {
+  root: $('#ed-live'),
+  before: $('#ed-live .lp-before'),
+  after: $('#ed-live .lp-after'),
+  ta: $('#ed-live .lp-editor'),
+  active: false,
+  start: 0,
+  end: 0,
+  cache: '',
+};
+el.live = live.root;
+const ed = () => (live.active ? live.ta : el.text);
+const viewEl = () => (effectiveMode(S.notes.get(S.currentId)) === 'live' ? el.live : el.preview);
+
+function fillBlocks(container, src, part) {
+  container.textContent = '';
+  const n = S.notes.get(S.currentId);
+  const opts = { resolve: resolveTitle, interactiveTasks: canEdit(n) };
+  for (const b of splitBlocks(src)) {
+    const d = document.createElement('div');
+    d.className = 'lp-block';
+    d.dataset.part = part;
+    d.dataset.s = b.start;
+    d.dataset.e = b.end;
+    renderInto(d, src.slice(b.start, b.end), opts);
+    container.append(d);
+  }
+}
+
+function renderLive(force = false) {
+  const src = el.text.value;
+  const head = live.active ? src.slice(0, live.start) : src;
+  const tail = live.active ? src.slice(live.end) : '';
+  const key = `${live.active}\u0000${head}\u0000${tail}\u0000${S.notes.size}`;
+  if (!force && key === live.cache) return;
+  live.cache = key;
+  fillBlocks(live.before, head, 'before');
+  fillBlocks(live.after, tail, 'after');
+  live.root.classList.toggle('is-empty', !live.active && !src.trim());
+  live.root.classList.toggle('readonly', !canEdit(S.notes.get(S.currentId)));
+}
+
+function liveAutosize() {
+  live.ta.style.height = 'auto';
+  live.ta.style.height = `${live.ta.scrollHeight}px`;
+}
+
+function liveActivate(start, end, caret) {
+  if (!canEdit(S.notes.get(S.currentId))) return;
+  live.active = true;
+  live.start = start;
+  live.end = end;
+  live.ta.hidden = false;
+  live.ta.value = el.text.value.slice(start, end);
+  renderLive(true);
+  liveAutosize();
+  live.ta.focus({ preventScroll: true });
+  const c = Math.max(0, Math.min(caret ?? live.ta.value.length, live.ta.value.length));
+  live.ta.setSelectionRange(c, c);
+  const r = live.ta.getBoundingClientRect();
+  if (r.top < 80 || r.bottom > window.innerHeight - 40) live.ta.scrollIntoView({ block: 'nearest' });
+}
+
+// Returns [oldSource, newSource]; an emptied block is removed together with its surrounding blank lines.
+function liveDeactivate() {
+  const src = el.text.value;
+  if (!live.active) return [src, src];
+  let next = src;
+  if (!live.ta.value.trim()) {
+    const head = src.slice(0, live.start).replace(/\n+$/, '');
+    const tail = src.slice(live.end).replace(/^\n+/, '');
+    next = head && tail ? `${head}\n\n${tail}` : head || tail;
+  }
+  live.active = false;
+  live.ta.hidden = true;
+  hideSuggest();
+  if (next !== src) {
+    el.text.value = next;
+    markDirty();
+  }
+  renderLive(true);
+  return [src, next];
+}
+
+function liveActivateEnd() {
+  if (live.active) liveDeactivate();
+  const trimmed = el.text.value.replace(/\s+$/, '');
+  const src = trimmed ? `${trimmed}\n\n` : '';
+  if (src !== el.text.value) el.text.value = src;
+  liveActivate(src.length, src.length, 0);
+}
+
+function liveRangeOf(blk) {
+  const base = blk.dataset.part === 'after' ? live.end : 0;
+  return [base + Number(blk.dataset.s), base + Number(blk.dataset.e)];
+}
+
+function liveGo(start, end, caret) {
+  if (live.active) {
+    const [o, n] = liveDeactivate();
+    if (o !== n) {
+      start = mapOffset(o, n, start);
+      end = mapOffset(o, n, end);
+    }
+  }
+  liveActivate(start, end, caret === 'end' ? end - start : caret);
+}
+
+function liveNeighbor(dir) {
+  const blocks = splitBlocks(el.text.value);
+  return dir < 0 ? blocks.filter((b) => b.end <= live.start).pop() : blocks.find((b) => b.start >= live.end);
+}
+
+// Map a click inside rendered HTML to an offset in the block's markdown (subsequence match of the visible text).
+function caretFromPoint(blk, x, y, raw) {
+  let range = null;
+  if (document.caretPositionFromPoint) {
+    const p = document.caretPositionFromPoint(x, y);
+    if (p) {
+      range = document.createRange();
+      range.setStart(p.offsetNode, p.offset);
+    }
+  } else if (document.caretRangeFromPoint) range = document.caretRangeFromPoint(x, y);
+  if (!range || !blk.contains(range.startContainer)) return raw.length;
+  const pre = document.createRange();
+  pre.selectNodeContents(blk);
+  pre.setEnd(range.startContainer, range.startOffset);
+  const want = pre.toString().replace(/\s/g, '');
+  let j = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (j >= want.length) return i;
+    if (raw[i] === want[j]) j++;
+  }
+  return raw.length;
+}
+
+live.root.addEventListener('mousedown', (e) => {
+  if (e.button !== 0 || e.target.closest('.lp-editor, a, input, button, summary')) return;
+  if (!canEdit(S.notes.get(S.currentId))) return;
+  const blk = e.target.closest('.lp-block');
+  if (blk) {
+    e.preventDefault();
+    const [start, end] = liveRangeOf(blk);
+    liveGo(start, end, caretFromPoint(blk, e.clientX, e.clientY, el.text.value.slice(start, end)));
+    return;
+  }
+  const blocks = $$('.lp-block', live.root);
+  const last = blocks[blocks.length - 1];
+  if (!last || e.clientY > last.getBoundingClientRect().bottom) {
+    e.preventDefault();
+    liveActivateEnd();
+  }
+});
+
+live.root.addEventListener('change', (e) => {
+  const cb = e.target.closest('input[data-task]');
+  const blk = cb?.closest('.lp-block');
+  if (!blk || !canEdit(S.notes.get(S.currentId))) return;
+  const [start, end] = liveRangeOf(blk);
+  const src = el.text.value;
+  el.text.value = src.slice(0, start) + toggleTask(src.slice(start, end), Number(cb.dataset.task)) + src.slice(end);
+  markDirty();
+  renderLive(true);
+});
+
+live.ta.addEventListener('input', () => {
+  const src = el.text.value;
+  el.text.value = src.slice(0, live.start) + live.ta.value + src.slice(live.end);
+  live.end = live.start + live.ta.value.length;
+  liveAutosize();
+  markDirty();
+  updateSuggest();
+});
+live.ta.addEventListener('click', updateSuggest);
+live.ta.addEventListener('blur', () => {
+  setTimeout(() => {
+    if (live.active && document.activeElement !== live.ta && document.hasFocus()) liveDeactivate();
+  }, 120);
+});
+
+live.ta.addEventListener('keydown', (e) => {
+  if (!sug.el.classList.contains('hidden')) return editorKeydown(e);
+  const ta = live.ta;
+  const v = ta.value;
+  const s = ta.selectionStart;
+  const t = ta.selectionEnd;
+  const plain = !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    ta.blur();
+    liveDeactivate();
+    return;
+  }
+  if (plain && ((e.key === 'ArrowUp' && !v.slice(0, s).includes('\n')) || (e.key === 'ArrowLeft' && s === 0 && t === 0))) {
+    const prev = liveNeighbor(-1);
+    if (prev) {
+      e.preventDefault();
+      liveGo(prev.start, prev.end, 'end');
+    }
+    return;
+  }
+  if (plain && ((e.key === 'ArrowDown' && !v.slice(t).includes('\n')) || (e.key === 'ArrowRight' && s === v.length && t === v.length))) {
+    const next = liveNeighbor(1);
+    if (next) {
+      e.preventDefault();
+      liveGo(next.start, next.end, 0);
+    }
+    return;
+  }
+  if (plain && e.key === 'Backspace' && s === 0 && t === 0) {
+    const prev = liveNeighbor(-1);
+    if (!prev) return;
+    e.preventDefault();
+    if (!v.trim()) return liveGo(prev.start, prev.end, 'end');
+    // merge into the previous block (joined by a line break)
+    const src = el.text.value;
+    const len = live.end - live.start;
+    el.text.value = `${src.slice(0, prev.end)}\n${src.slice(live.start)}`;
+    live.active = false;
+    live.ta.hidden = true;
+    markDirty();
+    const prevLen = prev.end - prev.start;
+    liveActivate(prev.start, prev.start + prevLen + 1 + len, prevLen + 1);
+    return;
+  }
+  editorKeydown(e);
+  if (e.defaultPrevented) return;
+  // Enter on an empty last line finishes this block and starts a new one below (not inside code fences).
+  if (plain && e.key === 'Enter' && s === t && s === v.length && v.endsWith('\n') && !/^\s*(```|~~~)/.test(v)) {
+    e.preventDefault();
+    const src = el.text.value;
+    const at = live.start + v.replace(/\n+$/, '').length;
+    const rest = src.slice(live.end).replace(/^\n+/, '');
+    el.text.value = `${src.slice(0, at)}\n\n${rest ? `\n\n${rest}` : ''}`;
+    live.active = false;
+    live.ta.hidden = true;
+    markDirty();
+    liveActivate(at + 2, at + 2, 0);
+  }
+});
+
 // ---------------------------------------------------- formatting
 function replaceRange(start, end, text, selStart, selEnd) {
-  el.text.focus();
-  el.text.setSelectionRange(start, end);
+  ed().focus();
+  ed().setSelectionRange(start, end);
   // execCommand keeps the browser's native undo stack; fall back to setRangeText where unsupported.
   const ok = text ? document.execCommand('insertText', false, text) : start === end || document.execCommand('delete');
   if (!ok) {
-    el.text.setRangeText(text, start, end, 'end');
-    el.text.dispatchEvent(new Event('input'));
+    ed().setRangeText(text, start, end, 'end');
+    ed().dispatchEvent(new Event('input'));
   }
   const caret = selStart ?? start + text.length;
-  el.text.setSelectionRange(caret, selEnd ?? caret);
+  ed().setSelectionRange(caret, selEnd ?? caret);
 }
 
 function wrap(before, after = before, placeholder = 'text') {
-  const { selectionStart: s, selectionEnd: e, value: v } = el.text;
+  const { selectionStart: s, selectionEnd: e, value: v } = ed();
   if (v.slice(s - before.length, s) === before && v.slice(e, e + after.length) === after) {
     const inner = v.slice(s, e);
     return replaceRange(s - before.length, e + after.length, inner, s - before.length, e - before.length);
@@ -770,7 +1085,7 @@ function wrap(before, after = before, placeholder = 'text') {
 }
 
 function lineRange() {
-  const { selectionStart: s, selectionEnd: e, value: v } = el.text;
+  const { selectionStart: s, selectionEnd: e, value: v } = ed();
   const start = v.lastIndexOf('\n', s - 1) + 1;
   let end = v.indexOf('\n', e === s ? e : e - 1);
   if (end < 0) end = v.length;
@@ -810,21 +1125,21 @@ const FORMATS = {
   task: () => togglePrefix(/^\s*[-*+]\s+\[[ xX]\]\s+/, '- [ ] '),
   quote: () => togglePrefix(/^\s*>\s?/, '> '),
   callout: () => {
-    const { selectionStart: s, selectionEnd: e, value: v } = el.text;
+    const { selectionStart: s, selectionEnd: e, value: v } = ed();
     const body = v.slice(s, e) || 'Write something important';
     const pre = s > 0 && v[s - 1] !== '\n' ? '\n\n' : '';
     const text = `${pre}> [!note] Note\n${body.split('\n').map((l) => `> ${l}`).join('\n')}\n`;
     replaceRange(s, e, text, s + pre.length + 4, s + pre.length + 8);
   },
   code: () => {
-    const { selectionStart: s, selectionEnd: e, value: v } = el.text;
+    const { selectionStart: s, selectionEnd: e, value: v } = ed();
     const sel = v.slice(s, e);
     if (sel.includes('\n') || (!sel && (s === 0 || v[s - 1] === '\n'))) {
       replaceRange(s, e, `\`\`\`\n${sel}\n\`\`\`\n`, s + 4, s + 4 + sel.length);
     } else wrap('`', '`', 'code');
   },
   link: () => {
-    const { selectionStart: s, selectionEnd: e, value: v } = el.text;
+    const { selectionStart: s, selectionEnd: e, value: v } = ed();
     const sel = v.slice(s, e) || 'link text';
     const text = `[${sel}](https://)`;
     replaceRange(s, e, text, s + sel.length + 3, s + text.length - 1);
@@ -834,23 +1149,25 @@ const FORMATS = {
     updateSuggest();
   },
   table: () => {
-    const s = el.text.selectionStart;
-    const pre = s > 0 && el.text.value[s - 1] !== '\n' ? '\n\n' : '';
-    replaceRange(s, el.text.selectionEnd, `${pre}| Column 1 | Column 2 | Column 3 |\n| --- | --- | --- |\n| | | |\n`);
+    const s = ed().selectionStart;
+    const pre = s > 0 && ed().value[s - 1] !== '\n' ? '\n\n' : '';
+    replaceRange(s, ed().selectionEnd, `${pre}| Column 1 | Column 2 | Column 3 |\n| --- | --- | --- |\n| | | |\n`);
   },
   hr: () => {
-    const s = el.text.selectionStart;
-    replaceRange(s, el.text.selectionEnd, `${s > 0 && el.text.value[s - 1] !== '\n' ? '\n' : ''}\n---\n`);
+    const s = ed().selectionStart;
+    replaceRange(s, ed().selectionEnd, `${s > 0 && ed().value[s - 1] !== '\n' ? '\n' : ''}\n---\n`);
   },
 };
 
 $('#toolbar').addEventListener('mousedown', (e) => e.preventDefault());
 $('#toolbar').addEventListener('click', (e) => {
   const b = e.target.closest('[data-fmt]');
-  if (b && !el.text.readOnly) FORMATS[b.dataset.fmt]();
+  if (!b || el.text.readOnly) return;
+  if (S.mode === 'live' && !live.active) liveActivateEnd();
+  FORMATS[b.dataset.fmt]();
 });
 
-el.text.addEventListener('keydown', (e) => {
+function editorKeydown(e) {
   if (suggestKey(e)) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === 'b') { e.preventDefault(); FORMATS.bold(); return; }
@@ -859,15 +1176,15 @@ el.text.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
     const { lines } = lineRange();
-    const multi = el.text.selectionStart !== el.text.selectionEnd || /^\s*([-*+]|\d+[.)])\s/.test(lines[0]);
+    const multi = ed().selectionStart !== ed().selectionEnd || /^\s*([-*+]|\d+[.)])\s/.test(lines[0]);
     if (e.shiftKey) transformLines((l) => l.replace(/^( {1,2}|\t)/, ''));
     else if (multi) transformLines((l) => `  ${l}`);
-    else replaceRange(el.text.selectionStart, el.text.selectionEnd, '  ');
+    else replaceRange(ed().selectionStart, ed().selectionEnd, '  ');
     return;
   }
-  if (e.key === 'Enter' && !e.shiftKey && !mod && el.text.selectionStart === el.text.selectionEnd) {
-    const v = el.text.value;
-    const pos = el.text.selectionStart;
+  if (e.key === 'Enter' && !e.shiftKey && !mod && ed().selectionStart === ed().selectionEnd) {
+    const v = ed().value;
+    const pos = ed().selectionStart;
     const ls = v.lastIndexOf('\n', pos - 1) + 1;
     const line = v.slice(ls, pos);
     const m = /^(\s*(?:>\s*)*)([-*+]|\d+)([.)])?(\s+\[[ xX]\])?\s+/.exec(line);
@@ -880,7 +1197,8 @@ el.text.addEventListener('keydown', (e) => {
     const marker = /^\d+$/.test(m[2]) ? `${Number(m[2]) + 1}${m[3]}` : m[2];
     replaceRange(pos, pos, `\n${m[1]}${marker}${m[4] ? ' [ ]' : ''} `);
   }
-});
+}
+el.text.addEventListener('keydown', editorKeydown);
 
 // ---------------------------------------------------- [[ autocomplete
 const sug = { el: $('#suggest'), items: [], active: 0, start: -1 };
@@ -902,10 +1220,10 @@ function caretCoords(ta, pos) {
 }
 
 function updateSuggest() {
-  const pos = el.text.selectionStart;
-  const before = el.text.value.slice(0, pos);
+  const pos = ed().selectionStart;
+  const before = ed().value.slice(0, pos);
   const m = /\[\[([^\]\n|#]*)$/.exec(before);
-  if (!m || el.text.selectionStart !== el.text.selectionEnd) return hideSuggest();
+  if (!m || ed().selectionStart !== ed().selectionEnd) return hideSuggest();
   const q = m[1].toLowerCase();
   sug.start = pos - m[1].length;
   const notes = [...S.notes.values()].filter((n) => !n.trashed && n.id !== S.currentId && n.title);
@@ -924,7 +1242,7 @@ function updateSuggest() {
   if (!scored.length) return hideSuggest();
   sug.active = 0;
   renderSuggest();
-  const c = caretCoords(el.text, pos);
+  const c = caretCoords(ed(), pos);
   sug.el.style.top = `${Math.min(c.top + 4, window.innerHeight - 270)}px`;
   sug.el.style.left = `${Math.min(c.left, window.innerWidth - 370)}px`;
   sug.el.classList.remove('hidden');
@@ -940,11 +1258,11 @@ function hideSuggest() {
 function pickSuggest(i) {
   const it = sug.items[i];
   if (!it) return;
-  const pos = el.text.selectionStart;
-  const after = el.text.value.slice(pos, pos + 2) === ']]' ? '' : ']]';
+  const pos = ed().selectionStart;
+  const after = ed().value.slice(pos, pos + 2) === ']]' ? '' : ']]';
   replaceRange(sug.start, pos, it.title + after);
   const end = sug.start + it.title.length + 2;
-  el.text.setSelectionRange(end, end);
+  ed().setSelectionRange(end, end);
   hideSuggest();
 }
 function suggestKey(e) {
@@ -1015,7 +1333,7 @@ $('#info-pane').addEventListener('click', (e) => {
   e.preventDefault();
   const n = S.notes.get(S.currentId);
   if (effectiveMode(n) !== 'edit') {
-    $$('h1,h2,h3,h4,h5,h6', el.preview)[Number(a.dataset.h)]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('h1,h2,h3,h4,h5,h6', viewEl())[Number(a.dataset.h)]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } else {
     const line = Number(a.dataset.line);
     const pos = el.text.value.split('\n').slice(0, line).join('\n').length + (line ? 1 : 0);
@@ -1027,13 +1345,11 @@ $('#info-pane').addEventListener('click', (e) => {
 
 // ============================================================ notes CRUD
 async function createNote({ title = '', content = '', notebook, open = true } = {}) {
-  const nb = notebook ?? (S.filter.type === 'notebook' ? S.filter.value : '');
-  if (!content && S.filter.type === 'tag') content = `#${S.filter.value}\n\n`;
+  const nb = notebook ?? S.activeFolder;
   try {
     const { note } = await post('/api/notes', { title, content, notebook: nb });
     S.notes.set(note.id, note);
     S.rev++;
-    if (!inFilter(note) && ['pinned', 'shared', 'published', 'trash'].includes(S.filter.type)) S.filter = { type: 'all', value: null };
     if (open) await openNote(note.id, { focus: title ? 'text' : 'title' });
     else renderAll();
     return note;
@@ -1088,6 +1404,15 @@ function openMoreMenu(anchor) {
   if (canEdit(n) || n.role === 'owner') {
     items.push({ label: 'Duplicate', icon: 'duplicate', action: () => createNote({ title: `${n.title || 'Untitled'} (copy)`, content: el.text.value, notebook: n.role === 'owner' ? n.notebook : '' }) });
   }
+  if (n.role === 'owner' && !n.trashed) {
+    if (isMobile()) {
+      items.push({ label: n.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: () => updateMeta({ pinned: !n.pinned }, n.pinned ? 'Unpinned' : 'Pinned') });
+    }
+    items.push({ label: n.publication ? 'Publish settings' : 'Publish to the web', icon: 'globe', action: () => openPublish(n.id) });
+    if (!n.publication?.hasPin) items.push({ label: 'Publish with PIN', icon: 'lock', action: () => openPublish(n.id, { withPin: true }) });
+  }
+  if (isMobile()) items.push({ label: 'Version history', icon: 'clock', action: () => openHistory(n.id) });
+  items.push('sep');
   items.push({ label: 'Export as Markdown', icon: 'download', action: () => download(`${(n.title || 'Untitled').replace(/[\\/:*?"<>|]/g, '_')}.md`, `# ${n.title}\n\n${el.text.value}`) });
   items.push({ label: 'Copy link to note', icon: 'link', action: () => copyText(`${location.origin}/#/note/${n.id}`) });
   items.push({ label: 'Copy [[wikilink]]', icon: 'wikilink', action: () => copyText(`[[${n.title}]]`) });
@@ -1113,40 +1438,93 @@ async function leaveNote(id) {
   closeEditor();
 }
 
-// ============================================================ sidebar / list events
+// ============================================================ sidebar events
+const isMobile = () => window.innerWidth <= 860;
+
+$('.sb-tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-view]');
+  if (b) setView(b.dataset.view);
+});
 $('#btn-new').addEventListener('click', () => createNote());
-$('#btn-switcher').addEventListener('click', openSwitcher);
-$('#nav-main').addEventListener('click', (e) => {
-  const a = e.target.closest('a');
-  if (!a) return;
-  e.preventDefault();
-  if (a.dataset.filter) setFilter(a.dataset.filter);
-  if (a.dataset.action === 'daily') dailyNote();
-  if (a.dataset.action === 'graph') openGraph();
-});
-$('#nav-notebooks').addEventListener('click', async (e) => {
-  const rn = e.target.closest('[data-rename]');
-  if (rn) {
-    e.preventDefault();
-    e.stopPropagation();
-    return renameNotebook(rn.dataset.rename);
-  }
-  const a = e.target.closest('[data-notebook]');
-  if (a) {
-    e.preventDefault();
-    setFilter('notebook', a.dataset.notebook);
-  }
-});
-$('#btn-new-notebook').addEventListener('click', async () => {
-  const name = await promptDialog('New notebook', { placeholder: 'e.g. Work or Work/Projects', okText: 'Create' });
+$('#btn-tab-new').addEventListener('click', () => createNote());
+$('#btn-daily').addEventListener('click', dailyNote);
+$('#btn-graph').addEventListener('click', openGraph);
+$('#btn-new-folder').addEventListener('click', async () => {
+  const name = await promptDialog('New folder', { placeholder: 'e.g. Work or Work/Projects', okText: 'Create' });
   if (!name) return;
   const nb = name.replace(/^\/+|\/+$/g, '');
-  S.filter = { type: 'notebook', value: nb };
+  S.activeFolder = nb;
   await createNote({ notebook: nb });
+});
+$('#btn-sort').addEventListener('click', (e) => {
+  const opt = (key, label) => ({ label, icon: S.sort === key ? 'check' : 'minus', action: () => { S.sort = key; localStorage.setItem('allnote-sort', key); renderTree(); } });
+  popupMenu(e.currentTarget, [opt('title', 'File name (A to Z)'), opt('updated', 'Modified time (new to old)'), opt('created', 'Created time (new to old)')]);
+});
+$('#btn-collapse-all').addEventListener('click', () => {
+  S.expanded.clear();
+  saveExpanded();
+  renderTree();
+});
+
+$('#tree').addEventListener('click', (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  e.preventDefault();
+  if (row.dataset.id) return openNote(row.dataset.id);
+  const key = row.dataset.folder;
+  if (S.expanded.has(key)) S.expanded.delete(key);
+  else S.expanded.add(key);
+  if (!key.startsWith('@')) S.activeFolder = key;
+  saveExpanded();
+  renderTree();
+});
+$('#tree').addEventListener('contextmenu', (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  e.preventDefault();
+  const key = row.dataset.folder;
+  if (key && !key.startsWith('@')) {
+    popupMenu(row, [
+      { label: 'New note here', icon: 'plus', action: () => { S.activeFolder = key; createNote({ notebook: key }); } },
+      { label: 'Rename folder', icon: 'edit', action: () => renameNotebook(key) },
+    ]);
+  } else if (row.dataset.id) {
+    const n = S.notes.get(row.dataset.id);
+    const items = [{ label: 'Open', icon: 'notes', action: () => openNote(n.id) }, { label: 'Copy [[wikilink]]', icon: 'wikilink', action: () => copyText(`[[${n.title}]]`) }];
+    if (n.role === 'owner' && !n.trashed) {
+      items.push({ label: n.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: async () => { const { note } = await put(`/api/notes/${n.id}`, { pinned: !n.pinned }); upsert(note); if (S.currentId === n.id) applyRoleUI(); } });
+      items.push({ label: n.publication ? 'Publish settings' : 'Publish to the web', icon: 'globe', action: () => openPublish(n.id) });
+      if (!n.publication?.hasPin) items.push({ label: 'Publish with PIN', icon: 'lock', action: () => openPublish(n.id, { withPin: true }) });
+      items.push('sep', { label: 'Move to trash', icon: 'trash', danger: true, action: () => trashNote(n.id) });
+    }
+    popupMenu(row, items);
+  }
+});
+
+$('#search').addEventListener('input', (e) => {
+  S.query = e.target.value;
+  renderSearch();
+});
+$('#search-results').addEventListener('click', (e) => {
+  const r = e.target.closest('.result');
+  if (!r) return;
+  e.preventDefault();
+  openNote(r.dataset.id);
+});
+
+$('#tabs').addEventListener('click', (e) => {
+  const x = e.target.closest('[data-close-tab]');
+  if (x) return closeTab(x.dataset.closeTab);
+  const t = e.target.closest('.tab');
+  if (t) openNote(t.dataset.tab);
+});
+$('#tabs').addEventListener('auxclick', (e) => {
+  const t = e.target.closest('.tab');
+  if (t && e.button === 1) closeTab(t.dataset.tab);
 });
 
 async function renameNotebook(path) {
-  const name = await promptDialog('Rename notebook', { value: path, okText: 'Rename' });
+  const name = await promptDialog('Rename folder', { value: path, okText: 'Rename' });
   if (!name || name === path) return;
   const target = name.replace(/^\/+|\/+$/g, '');
   const affected = [...S.notes.values()].filter((n) => n.role === 'owner' && (n.notebook === path || n.notebook.startsWith(`${path}/`)));
@@ -1154,27 +1532,26 @@ async function renameNotebook(path) {
     const { note } = await put(`/api/notes/${n.id}`, { notebook: target + n.notebook.slice(path.length) });
     upsert(note);
   }));
-  if (S.filter.type === 'notebook' && S.filter.value === path) S.filter.value = target;
+  if (S.expanded.delete(path)) S.expanded.add(target);
+  saveExpanded();
+  if (S.activeFolder === path) S.activeFolder = target;
   if (S.currentId) applyRoleUI();
   renderAll();
   toast(`Renamed to ${target}`);
 }
 
-el.list = $('#note-list');
-el.list.addEventListener('click', (e) => {
-  const it = e.target.closest('.note-item');
-  if (it) openNote(it.dataset.id);
-});
-el.search = $('#search');
-el.search.addEventListener('input', () => {
-  S.query = el.search.value;
-  renderList();
-});
-$('#sort').addEventListener('change', (e) => {
-  S.sort = e.target.value;
-  localStorage.setItem('allnote-sort', S.sort);
-  renderList();
-});
+function toggleSidebar() {
+  if (isMobile()) {
+    el.app.classList.toggle('nav-open');
+    return;
+  }
+  const collapsed = el.app.classList.toggle('sb-collapsed');
+  localStorage.setItem('allnote-sidebar', collapsed ? '0' : '1');
+}
+$('#btn-collapse').addEventListener('click', toggleSidebar);
+$('#btn-menu').addEventListener('click', toggleSidebar);
+$('#scrim').addEventListener('click', () => $('#app').classList.remove('nav-open'));
+
 $('#btn-theme').addEventListener('click', () => {
   const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = t;
@@ -1186,8 +1563,15 @@ $('#btn-logout').addEventListener('click', async () => {
   location.href = '/';
 });
 $('#btn-account').addEventListener('click', openAccount);
-$('#btn-menu').addEventListener('click', () => $('#app').classList.add('nav-open'));
-$('#scrim').addEventListener('click', () => $('#app').classList.remove('nav-open'));
+$('#btn-settings').addEventListener('click', openAccount);
+$('.empty-actions').addEventListener('click', (e) => {
+  const a = e.target.closest('a');
+  if (!a) return;
+  e.preventDefault();
+  if (a.id === 'empty-new') createNote();
+  if (a.id === 'empty-switch') openSwitcher();
+  if (a.id === 'empty-daily') dailyNote();
+});
 
 document.addEventListener('keydown', (e) => {
   if (!S.me || $('#modal-root').children.length) return;
@@ -1196,7 +1580,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && (k === 'k' || k === 'p') && !e.shiftKey) { e.preventDefault(); openSwitcher(); }
   else if (e.altKey && k === 'n') { e.preventDefault(); createNote(); }
   else if (mod && k === 's') { e.preventDefault(); save(); }
-  else if (mod && k === 'e' && S.currentId) { e.preventDefault(); setMode(S.mode === 'preview' ? 'split' : 'preview'); }
+  else if (mod && k === 'e' && S.currentId) { e.preventDefault(); setMode(S.mode === 'preview' ? 'live' : 'preview'); }
 });
 
 window.addEventListener('hashchange', route);
@@ -1375,23 +1759,59 @@ async function openShare(id) {
 }
 
 // ============================================================ publish
-function openPublish(id) {
-  const m = modal({ title: 'Publish to the web', body: '<div id="pub"></div>', foot: '<button class="btn" data-close>Done</button>' });
+const PIN_RE = /^[A-Za-z0-9]{4,12}$/;
+const randomPin = () => String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+
+function openPublish(id, { withPin = false } = {}) {
+  const m = modal({ title: 'Publish to the web', cls: 'publish-modal', body: '<div id="pub"></div>', foot: '<div id="pub-foot" class="pub-foot"></div>' });
+  let access = S.notes.get(id).publication?.hasPin || withPin ? 'pin' : 'public';
+  let lastPin = '';
+
+  const accessCards = (p) => `
+    <div class="access" role="radiogroup" aria-label="Who can view">
+      <label class="access-opt ${access === 'public' ? 'on' : ''}"><input type="radio" name="access" value="public" ${access === 'public' ? 'checked' : ''}>
+        ${icon('globe', 20)}<span><b>Anyone with the link</b><small>No PIN needed</small></span></label>
+      <label class="access-opt ${access === 'pin' ? 'on' : ''}"><input type="radio" name="access" value="pin" ${access === 'pin' ? 'checked' : ''}>
+        ${icon('lock', 20)}<span><b>Protected with a PIN</b><small>${p?.hasPin ? 'PIN is set' : 'Visitors must enter a PIN'}</small></span></label>
+    </div>`;
+
+  const pinField = (p) => access !== 'pin' ? '' : `
+    <form id="pub-pin" class="pin-field">
+      <label for="pin-input">${p?.hasPin ? 'Change PIN' : 'PIN'} <small class="muted">4–12 letters or digits</small></label>
+      <div class="pin-row">
+        <input id="pin-input" name="pin" type="password" inputmode="text" autocomplete="new-password" value="${p ? '' : esc(lastPin)}" placeholder="${p?.hasPin ? '••••••' : 'e.g. 482915'}" ${p ? '' : 'autofocus'}>
+        <button type="button" class="icon-btn" id="pin-show" title="Show PIN">${icon('eye', 18)}</button>
+        <button type="button" class="btn sm" id="pin-gen">Generate</button>
+      </div>
+      ${p ? `<button class="btn primary block" id="pin-save">${p.hasPin ? 'Update PIN' : 'Turn on PIN'}</button>` : ''}
+    </form>`;
+
   const render = () => {
     const n = S.notes.get(id);
     const p = n.publication;
     const url = p ? `${location.origin}/p/${p.slug}` : '';
-    $('#pub', m.el).innerHTML = `
-      <div class="card"><label class="switch"><input type="checkbox" id="pub-on" ${p ? 'checked' : ''}> ${p ? 'Published — anyone with the link can open it' : 'Not published'}</label></div>
-      ${p ? `
-      <div class="section-title">${icon('link', 16)} Public link</div>
-      <div class="copybox"><input readonly value="${esc(url)}"><button class="btn" id="pub-copy">${icon('copy', 15)} Copy</button><a class="btn" href="${esc(url)}" target="_blank">${icon('external', 15)} Open</a></div>
-      <form class="row" id="pub-slug" style="margin-top:8px"><span class="muted">/p/</span><input name="slug" value="${esc(p.slug)}" pattern="[a-z0-9][a-z0-9-]{2,63}" title="3-64 lowercase letters, digits or dashes"><button class="btn">Change link</button></form>
-      <div class="section-title">${icon('lock', 16)} PIN protection</div>
-      <p class="muted" style="margin:0 0 8px">${p.hasPin ? '<b style="color:var(--ok)">On</b> — visitors must enter the PIN to read this page.' : 'Off — anyone with the link can read this page.'}</p>
-      <form class="row" id="pub-pin"><input name="pin" type="password" placeholder="${p.hasPin ? 'New PIN' : 'Set a PIN (4–12 letters/digits)'}" pattern="[A-Za-z0-9]{4,12}" required autocomplete="new-password"><button class="btn primary">${p.hasPin ? 'Change PIN' : 'Set PIN'}</button>${p.hasPin ? '<button class="btn danger" type="button" id="pub-nopin">Remove</button>' : ''}</form>
-      <p class="muted" style="font-size:12.5px;margin-top:14px">The published page always shows the latest version of this note. Links to other notes are shown as plain text.</p>` : ''}`;
+    if (!p) {
+      $('#pub', m.el).innerHTML = `
+        <p class="muted pub-intro">Create a read-only web page of <b>${esc(n.title || 'Untitled')}</b>. It always shows the latest version.</p>
+        <div class="section-title">Who can view</div>
+        ${accessCards(null)}${pinField(null)}`;
+      $('#pub-foot', m.el).innerHTML = `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pub-go">${icon(access === 'pin' ? 'lock' : 'globe', 16)} ${access === 'pin' ? 'Publish with PIN' : 'Publish'}</button>`;
+    } else {
+      $('#pub', m.el).innerHTML = `
+        <div class="pub-status">${icon(p.hasPin ? 'lock' : 'globe', 18)}<span><b>Published</b> · ${p.hasPin ? 'PIN protected' : 'anyone with the link can view'}</span></div>
+        <div class="section-title">Link</div>
+        <div class="copybox"><input readonly value="${esc(url)}" aria-label="Public link"><div class="copy-actions"><button class="btn" id="pub-copy">${icon('copy', 15)} Copy</button><a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${icon('external', 15)} Open</a></div></div>
+        ${lastPin ? `<div class="pin-share">${icon('lock', 16)}<span>PIN: <b class="mono">${esc(lastPin)}</b> — share it separately or</span><button class="btn sm" id="pub-copy-both">${icon('copy', 14)} Copy link + PIN</button></div>` : ''}
+        <div class="section-title">Who can view</div>
+        ${accessCards(p)}${pinField(p)}
+        <details class="pub-more"><summary>Custom link</summary>
+          <form class="row" id="pub-slug"><span class="muted">/p/</span><input name="slug" value="${esc(p.slug)}" pattern="[a-z0-9][a-z0-9-]{2,63}" title="3-64 lowercase letters, digits or dashes" autocapitalize="off"><button class="btn">Save</button></form>
+        </details>`;
+      $('#pub-foot', m.el).innerHTML = '<button class="btn danger" id="pub-off">Unpublish</button><button class="btn primary" data-close>Done</button>';
+    }
+    $$('[data-close]', m.el).forEach((b) => { b.onclick = m.close; });
   };
+
   const send = async (body, msg) => {
     try {
       const { note } = await put(`/api/notes/${id}/publish`, body);
@@ -1399,23 +1819,78 @@ function openPublish(id) {
       if (S.currentId === id) applyRoleUI();
       render();
       if (msg) toast(msg);
+      return true;
     } catch (err) {
       toast(err.message, 'error');
-      render();
+      return false;
     }
   };
-  m.el.addEventListener('change', (e) => {
-    if (e.target.id === 'pub-on') send({ published: e.target.checked }, e.target.checked ? 'Published' : 'Unpublished');
+
+  const readPin = () => {
+    const pin = ($('#pin-input', m.el)?.value || '').trim();
+    if (!PIN_RE.test(pin)) {
+      toast('PIN must be 4–12 letters or digits', 'error');
+      $('#pin-input', m.el)?.focus();
+      return null;
+    }
+    return pin;
+  };
+
+  m.el.addEventListener('change', async (e) => {
+    if (e.target.name !== 'access') return;
+    access = e.target.value;
+    const p = S.notes.get(id).publication;
+    if (p && access === 'public' && p.hasPin) {
+      lastPin = '';
+      await send({ published: true, pin: null }, 'PIN removed — the link is now public');
+    } else {
+      render();
+      if (access === 'pin') $('#pin-input', m.el)?.focus();
+    }
   });
-  m.el.addEventListener('submit', (e) => {
+
+  m.el.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const d = Object.fromEntries(new FormData(e.target));
-    if (e.target.id === 'pub-slug') send({ published: true, slug: d.slug }, 'Link updated');
-    if (e.target.id === 'pub-pin') send({ published: true, pin: d.pin }, 'PIN set — previous visitors must re-enter it');
+    if (e.target.id === 'pub-slug') send({ published: true, slug: new FormData(e.target).get('slug') }, 'Link updated');
+    if (e.target.id === 'pub-pin' && S.notes.get(id).publication) {
+      const pin = readPin();
+      if (pin && await send({ published: true, pin }, 'PIN saved — earlier visitors must enter it again')) {
+        lastPin = pin;
+        render();
+      }
+    }
   });
-  m.el.addEventListener('click', (e) => {
-    if (e.target.closest('#pub-copy')) copyText(m.el.querySelector('.copybox input').value);
-    if (e.target.closest('#pub-nopin')) send({ published: true, pin: null }, 'PIN removed');
+
+  m.el.addEventListener('click', async (e) => {
+    const t = e.target.closest('button, a');
+    if (!t) return;
+    if (t.id === 'pin-gen') {
+      const input = $('#pin-input', m.el);
+      input.value = randomPin();
+      input.type = 'text';
+    }
+    if (t.id === 'pin-show') {
+      const input = $('#pin-input', m.el);
+      input.type = input.type === 'password' ? 'text' : 'password';
+    }
+    if (t.id === 'pub-go') {
+      const body = { published: true };
+      if (access === 'pin') {
+        const pin = readPin();
+        if (!pin) return;
+        body.pin = pin;
+        lastPin = pin;
+      }
+      if (!(await send(body, access === 'pin' ? 'Published with PIN' : 'Published'))) lastPin = '';
+      else render();
+    }
+    if (t.id === 'pub-copy') copyText($('.copybox input', m.el).value);
+    if (t.id === 'pub-copy-both') copyText(`${$('.copybox input', m.el).value}\nPIN: ${lastPin}`);
+    if (t.id === 'pub-off' && await confirmDialog('Unpublish this note? The public link will stop working.', { okText: 'Unpublish', danger: true })) {
+      lastPin = '';
+      access = 'public';
+      send({ published: false }, 'Unpublished');
+    }
   });
   render();
 }
