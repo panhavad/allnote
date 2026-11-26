@@ -97,6 +97,45 @@ test('publishing with PIN protection', async () => {
   assert.equal((await visitor('GET', `/api/public/${slug}`)).status, 404);
 });
 
+test('drag and drop: reorder notes, move them in and out of folders, move folders', async () => {
+  const me = srv.client();
+  await me('POST', '/api/auth/register', { email: 'dnd@x.io', password: 'password123', name: 'Dnd' });
+  const mk = async (title, notebook) => (await me('POST', '/api/notes', { title, notebook })).data.note;
+  const a = await mk('A', 'Work');
+  const b = await mk('B', 'Work');
+  const c = await mk('C', '');
+
+  const r = await me('POST', '/api/notes/reorder', { notebook: 'Work', ids: [c.id, b.id, a.id] });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.data.notes.map((n) => [n.title, n.notebook, n.position]), [['C', 'Work', 0], ['B', 'Work', 1], ['A', 'Work', 2]]);
+  assert.equal(r.data.notes[2].version, a.version, 'arranging never creates a new content version');
+
+  await me('POST', '/api/notes/reorder', { notebook: '', ids: [a.id] });
+  const byId = async () => Object.fromEntries((await me('GET', '/api/notes')).data.notes.map((n) => [n.id, n]));
+  assert.equal((await byId())[a.id].notebook, '', 'dragged out of the folder');
+
+  const d = await mk('D', 'Work/Sub');
+  const mv = await me('POST', '/api/notes/move-folder', { from: 'Work', to: 'Archive/Work' });
+  assert.equal(mv.status, 200);
+  const after = await byId();
+  assert.deepEqual([after[b.id].notebook, after[c.id].notebook, after[d.id].notebook], ['Archive/Work', 'Archive/Work', 'Archive/Work/Sub']);
+  assert.equal(after[a.id].notebook, '', 'notes outside the folder are untouched');
+  assert.equal((await me('POST', '/api/notes/move-folder', { from: 'Archive', to: 'Archive/Work/Deeper' })).status, 400, 'no folder inside itself');
+  assert.equal((await me('POST', '/api/notes/move-folder', { from: 'Nope', to: 'X' })).status, 404);
+  assert.equal((await me('POST', '/api/notes/reorder', { notebook: 'X', ids: [a.id, a.id] })).status, 400, 'duplicate ids rejected');
+
+  const fo = await me('PUT', '/api/account/folder-order', { order: ['Archive', 'Daily'] });
+  assert.deepEqual(fo.data.user.folderOrder, ['Archive', 'Daily']);
+  assert.deepEqual((await me('GET', '/api/auth/me')).data.user.folderOrder, ['Archive', 'Daily']);
+
+  const other = srv.client();
+  await other('POST', '/api/auth/register', { email: 'dnd2@x.io', password: 'password123' });
+  await me('POST', `/api/notes/${b.id}/shares`, { email: 'dnd2@x.io', role: 'editor' });
+  assert.equal((await other('POST', '/api/notes/reorder', { notebook: 'Mine', ids: [b.id] })).status, 403, 'collaborators cannot move the owner notes');
+  assert.equal((await other('POST', '/api/notes/move-folder', { from: 'Archive', to: 'Stolen' })).status, 404, 'folders are per owner');
+  assert.equal((await byId())[b.id].notebook, 'Archive/Work');
+});
+
 test('Google SSO is configured by the admin in the UI and the secret never leaves the server', async () => {
   const admin = srv.client();
   await admin('POST', '/api/auth/login', { email: 'admin@x.io', password: 'password123' });

@@ -100,6 +100,12 @@ addUserCol('is_admin', 'INTEGER NOT NULL DEFAULT 0');
 addUserCol('approved', 'INTEGER NOT NULL DEFAULT 1'); // accounts that existed before approvals stay approved
 addUserCol('expires_at', 'INTEGER'); // NULL = never expires
 addUserCol('tour_done', 'INTEGER NOT NULL DEFAULT 1'); // existing users skip the onboarding tour; new users get 0
+addUserCol('folder_order', 'TEXT'); // JSON array of folder paths in the user's custom order
+
+// Manual note order inside a folder (drag and drop). NULL = not placed yet, sorted after placed notes.
+if (!db.prepare('PRAGMA table_info(notes)').all().some((c) => c.name === 'position')) {
+  db.exec('ALTER TABLE notes ADD COLUMN position REAL');
+}
 
 // Existing installs without an admin: the earliest account becomes the admin.
 if (!db.prepare('SELECT 1 FROM users WHERE is_admin = 1').get()) {

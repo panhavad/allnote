@@ -23,7 +23,7 @@ Current version: **1.1.0** (shown on the landing page, the sign-in page and insi
 | --- | --- |
 | Writing | **Live preview** (notes stay formatted; click any paragraph, list or table to edit it in place), plus source, split and reading modes, toolbar and shortcuts, list auto-continue, checklists you can tick in the preview, tables, code, `==highlight==`, callouts (`> [!tip]`) |
 | Linking | `[[Note]]`, `[[Note\|alias]]`, `[[Note#Heading]]`, `![[Note]]` embeds, `[[` autocomplete, click a missing link to create the note, backlinks, outgoing links, outline, interactive graph view |
-| Organising | Nested folders (`Work/Projects`), `#tags` (nested `#work/alpha`), pinned notes, trash and restore, daily notes, quick switcher (`Ctrl+K`), full-text search with `tag:` and `notebook:` filters |
+| Organising | Nested folders (`Work/Projects`), **drag and drop** in the sidebar (reorder notes, move notes and folders in and out of folders, reorder folders, drop on Pinned or Trash; mouse or press-and-hold on touch), `#tags` (nested `#work/alpha`), pinned notes, trash and restore, daily notes, quick switcher (`Ctrl+K`), full-text search with `tag:` and `notebook:` filters |
 | Collaboration | Share a note by email as *Can edit* / *Can view*, live updates over Server-Sent Events, presence avatars, automatic 3-way merge of concurrent edits, version history with restore |
 | Publishing | One-click public page at `/p/<link>`, custom link, optional **PIN** (hashed, rate limited, re-locks when the PIN changes) |
 | Accounts | First user becomes the **administrator**; new sign-ups need **admin approval**; per-user **expiration dates**; **license keys** with custom durations to reactivate expired accounts |
@@ -238,6 +238,24 @@ flowchart LR
   E --> H["Version history keeps earlier versions"]
 ```
 
+### Drag and drop in the file tree
+
+```mermaid
+flowchart TD
+  A["Mouse: press and move 6 px<br/>Touch: press and hold 0.35 s, then move"] --> B["Drag a note or a folder"]
+  B --> C{"Drop target"}
+  C -- "Between two notes" --> D["Reorder: POST /api/notes/reorder {notebook, ids}<br/>sort switches to Custom order"]
+  C -- "On a folder" --> E["Note moves into the folder<br/>(closed folders open after a short hover)"]
+  C -- "Move to top level zone" --> F["Note or folder leaves its folder"]
+  C -- "Above or below a folder (dragging a folder)" --> G["Folder is placed there:<br/>POST /api/notes/move-folder + PUT /api/account/folder-order"]
+  C -- "Pinned / Trash" --> H["Pin the note / move it to the trash"]
+  D & E & F & G & H --> I["Saved at once, other tabs and collaborators update over SSE"]
+  J["Touch: hold without moving"] --> K["Opens the row menu as before"]
+  L["Esc while dragging"] --> M["Cancel"]
+```
+
+Only the owner can arrange notes. Arranging never creates a new version of a note.
+
 ### Publishing with a PIN
 
 ```mermaid
@@ -390,7 +408,7 @@ Run `npm run test:report` whenever a feature is added or removed. It writes:
 
 | Suite | File | Covers |
 | --- | --- | --- |
-| Core features | `test/api.test.js` | Registration, sign-in, 2FA and recovery codes, notes, optimistic versioning, sharing roles, history, publishing with PIN, Google SSO settings |
+| Core features | `test/api.test.js` | Registration, sign-in, 2FA and recovery codes, notes, optimistic versioning, sharing roles, history, publishing with PIN, drag and drop arrangement (reorder, move notes and folders, folder order, owner only), Google SSO settings |
 | Administration | `test/admin.test.js` | First admin, approval flow, sign-up and approval settings, expiration and renewal, license keys (generate, redeem, stack, single use, revoke), add, reset and remove users, tour flag, landing page toggle, version and cache headers |
 | Security | `test/security.test.js` | Every admin endpoint requires an admin, privilege escalation attempts, admin self-lockout protection, locked accounts blocked from every feature and the event stream, brute-force limits (login, license keys), CSRF, security headers and cookie flags, no secret leakage, input validation and injection, path traversal |
 | Backward compatibility | `test/migration.test.js` | A v1.0 database upgrades in place: accounts, passwords, sessions and notes are kept, the oldest user becomes admin, existing users stay approved |
@@ -399,16 +417,16 @@ Run `npm run test:report` whenever a feature is added or removed. It writes:
 ### Test summary
 
 <!-- test-summary:start -->
-**Last run:** 2026-11-26 16:51 UTC, version 1.1.0: **PASSED**, 28/28 tests passed. Dependency audit: no known vulnerabilities in production dependencies.
+**Last run:** 2026-11-26 17:02 UTC, version 1.1.0: **PASSED**, 29/29 tests passed. Dependency audit: no known vulnerabilities in production dependencies.
 
 | Suite | Tests | Passed | Failed | Time |
 | --- | ---: | ---: | ---: | ---: |
-| Administration, approval, expiration, licenses, landing page, tour, versioning | 7 | 7 | 0 | 4.7 s |
-| Core features (auth, 2FA, notes, sharing, publishing, Google SSO) | 5 | 5 | 0 | 6.0 s |
-| Backward compatibility (v1.0 database upgrade) | 1 | 1 | 0 | 2.1 s |
-| Security (access control, locked accounts, brute force, CSRF, headers, secrets, validation) | 11 | 11 | 0 | 5.0 s |
+| Administration, approval, expiration, licenses, landing page, tour, versioning | 7 | 7 | 0 | 2.9 s |
+| Core features (auth, 2FA, notes, sharing, publishing, Google SSO) | 6 | 6 | 0 | 4.5 s |
+| Backward compatibility (v1.0 database upgrade) | 1 | 1 | 0 | 1.9 s |
+| Security (access control, locked accounts, brute force, CSRF, headers, secrets, validation) | 11 | 11 | 0 | 5.1 s |
 | UI guarantees (no emoji, icons, light/dark mode, version display) | 4 | 4 | 0 | 0.2 s |
-| **Total** | **28** | **28** | **0** | |
+| **Total** | **29** | **29** | **0** | |
 
 Full report: [test/reports/latest.md](test/reports/latest.md)
 <!-- test-summary:end -->
@@ -425,6 +443,7 @@ Full report: [test/reports/latest.md](test/reports/latest.md)
 | `Ctrl/Cmd + Enter` | Toggle checklist on line |
 | `Tab` / `Shift+Tab` | Indent / outdent |
 | `[[` | Link autocomplete |
+| `Esc` while dragging | Cancel the drag |
 
 ## Backup
 
@@ -453,6 +472,7 @@ public/
   publish.html    Public page for published notes
   js/app.js       UI, sync, collaboration, locked screen, help
   js/admin.js     Admin console
+  js/treedrag.js  Drag and drop for the sidebar tree (mouse and touch)
   js/tour.js      Onboarding tour
   js/common.js    Theme toggle, field icons, version, update detection
   js/markdown.js  Markdown, wiki links, embeds, tags, callouts (marked + DOMPurify)

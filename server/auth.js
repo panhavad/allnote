@@ -148,6 +148,15 @@ authRouter.post('/api/account/2fa/disable', requireActive, (req, res) => {
   res.json({ user: publicUser(getUserById(req.user.id)) });
 });
 
+authRouter.put('/api/account/folder-order', requireActive, (req, res) => {
+  const order = req.body?.order;
+  if (!Array.isArray(order) || order.length > 2000 || !order.every((p) => typeof p === 'string' && p.length <= 200)) {
+    return res.status(400).json({ error: 'Invalid folder order' });
+  }
+  db.prepare('UPDATE users SET folder_order = ? WHERE id = ?').run(JSON.stringify([...new Set(order)]), req.user.id);
+  res.json({ user: publicUser(getUserById(req.user.id)) });
+});
+
 authRouter.post('/api/account/tour', requireAuth, (req, res) => {
   db.prepare('UPDATE users SET tour_done = ? WHERE id = ?').run(req.body?.done === false ? 0 : 1, req.user.id);
   res.json({ user: publicUser(getUserById(req.user.id)) });

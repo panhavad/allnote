@@ -30,6 +30,7 @@ function serialize(r) {
     notebook: r.notebook,
     pinned: Boolean(r.pinned),
     trashed: Boolean(r.trashed),
+    position: r.position ?? null,
     version: r.version,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -88,6 +89,46 @@ notesRouter.post('/api/notes', (req, res) => {
   const note = noteForUser(id, req.user.id);
   sendToUser(req.user.id, 'note', { note, clientId: clientIdOf(req) });
   res.status(201).json({ note });
+});
+
+// ---------- drag and drop arrangement (owner only; never changes content or version) ----------
+const cleanPath = (p) => String(p ?? '').split('/').map((s) => s.trim()).filter(Boolean).join('/').slice(0, 200);
+const isIdList = (ids) => Array.isArray(ids) && ids.length > 0 && ids.length <= 5000
+  && ids.every((x) => typeof x === 'string' && x.length <= 64) && new Set(ids).size === ids.length;
+
+// Puts the given notes into one folder, in exactly this order.
+notesRouter.post('/api/notes/reorder', (req, res) => {
+  const notebook = cleanPath(req.body?.notebook);
+  const { ids } = req.body || {};
+  if (!isIdList(ids)) return res.status(400).json({ error: 'Invalid order' });
+  const qRow = db.prepare('SELECT id, notebook, position FROM notes WHERE id = ? AND owner_id = ?');
+  const rows = ids.map((id) => qRow.get(id, req.user.id));
+  if (rows.some((r) => !r)) return res.status(403).json({ error: 'You can only arrange your own notes' });
+  const changed = rows.filter((r, i) => r.notebook !== notebook || r.position !== i).map((r) => r.id);
+  tx(() => {
+    const up = db.prepare('UPDATE notes SET notebook = ?, position = ? WHERE id = ?');
+    ids.forEach((id, i) => up.run(notebook, i, id));
+  });
+  for (const id of changed) broadcast(id, clientIdOf(req));
+  res.json({ notes: ids.map((id) => noteForUser(id, req.user.id)) });
+});
+
+// Moves (or renames) a folder with all its sub-folders.
+notesRouter.post('/api/notes/move-folder', (req, res) => {
+  const from = cleanPath(req.body?.from);
+  const to = cleanPath(req.body?.to);
+  if (!from || !to) return res.status(400).json({ error: 'Folder name is required' });
+  if (to === from) return res.json({ notes: [] });
+  if (to.startsWith(`${from}/`)) return res.status(400).json({ error: 'A folder cannot be moved into itself' });
+  const rows = db.prepare('SELECT id, notebook FROM notes WHERE owner_id = ? AND (notebook = ? OR substr(notebook, 1, ?) = ?)')
+    .all(req.user.id, from, from.length + 1, `${from}/`);
+  if (!rows.length) return res.status(404).json({ error: 'Folder not found' });
+  tx(() => {
+    const up = db.prepare('UPDATE notes SET notebook = ? WHERE id = ?');
+    for (const r of rows) up.run((to + r.notebook.slice(from.length)).slice(0, 200), r.id);
+  });
+  for (const r of rows) broadcast(r.id, clientIdOf(req));
+  res.json({ notes: rows.map((r) => noteForUser(r.id, req.user.id)) });
 });
 
 notesRouter.put('/api/notes/:id', (req, res) => {

@@ -13,6 +13,7 @@ import {
 } from './common.js';
 import { startTour } from './tour.js';
 import { openAdmin } from './admin.js';
+import { enableTreeDrag } from './treedrag.js';
 
 // ============================================================ state
 const S = {
@@ -475,7 +476,15 @@ const SORTS = {
   title: (a, b) => (a.title || 'Untitled').localeCompare(b.title || 'Untitled', undefined, { numeric: true }),
   updated: (a, b) => b.updatedAt - a.updatedAt,
   created: (a, b) => b.createdAt - a.createdAt,
+  // Drag and drop order; notes that were never placed follow, by name.
+  custom: (a, b) => (a.position ?? Infinity) - (b.position ?? Infinity) || SORTS.title(a, b),
 };
+/** Sibling folders: the user's dragged order first, then the rest by name. */
+function sortFolders(paths) {
+  const order = S.me?.folderOrder || [];
+  const rank = (p) => { const i = order.indexOf(p); return i < 0 ? Infinity : i; };
+  return paths.sort((x, y) => (rank(x) - rank(y)) || x.localeCompare(y, undefined, { numeric: true }));
+}
 const saveExpanded = () => localStorage.setItem('allnote-expanded', JSON.stringify([...S.expanded]));
 
 function setView(view) {
@@ -503,11 +512,11 @@ function renderPanel() {
   else renderTags();
 }
 
-function noteRow(n, depth) {
+function noteRow(n, depth, parent) {
   const marks = [];
   if (n.shareCount) marks.push(`<span title="Shared">${icon('users', 13)}</span>`);
   if (n.publication) marks.push(`<span title="Published">${icon(n.publication.hasPin ? 'lock' : 'globe', 13)}</span>`);
-  return `<a href="#" class="row note ${n.id === S.currentId ? 'active' : ''}" data-id="${n.id}" style="--d:${depth}" title="${esc(n.title || 'Untitled')}">`
+  return `<a href="#" class="row note ${n.id === S.currentId ? 'active' : ''}" data-id="${n.id}"${parent ? ` data-parent="${parent}"` : ''} style="--d:${depth}" title="${esc(n.title || 'Untitled')}">`
     + `<span class="label">${esc(n.title || 'Untitled')}</span>${marks.length ? `<span class="marks">${marks.join('')}</span>` : ''}</a>`;
 }
 
@@ -536,12 +545,14 @@ function renderTree() {
   const virtual = (key, label, ic, list) => {
     if (!list.length) return;
     out.push(folderRow(key, label, 0, { ic, count: list.length }));
-    if (S.expanded.has(key)) list.sort(sort).forEach((n) => out.push(noteRow(n, 1)));
+    if (S.expanded.has(key)) list.sort(sort).forEach((n) => out.push(noteRow(n, 1, key)));
   };
   virtual('@pinned', 'Pinned', 'pin', live.filter((n) => n.pinned));
   const walk = (node, path, depth) => {
-    for (const k of Object.keys(node.folders).sort((x, y) => x.localeCompare(y))) {
-      const p = path ? `${path}/${k}` : k;
+    const keys = Object.keys(node.folders);
+    const byPath = new Map(keys.map((k) => [path ? `${path}/${k}` : k, k]));
+    for (const p of sortFolders([...byPath.keys()])) {
+      const k = byPath.get(p);
       out.push(folderRow(p, k, depth));
       if (S.expanded.has(p)) walk(node.folders[k], p, depth + 1);
     }
@@ -550,8 +561,12 @@ function renderTree() {
   walk(root, '', 0);
   virtual('@shared', 'Shared with me', 'users', live.filter((n) => n.role !== 'owner'));
   virtual('@trash', 'Trash', 'trash', all.filter((n) => n.trashed && n.role === 'owner'));
-  $('#tree').innerHTML = out.join('') || '<div class="panel-empty">No notes yet.<br>Create one with the <b>New note</b> button.</div>';
+  $('#tree').innerHTML = out.length
+    ? `${out.join('')}<div class="tree-end" title="Drop here to move to the top level"><span>${icon('folder', 14)} Move to top level</span></div>`
+    : '<div class="panel-empty">No notes yet.<br>Create one with the <b>New note</b> button.</div>';
+  treeDrag?.refresh();
 }
+let treeDrag = null;
 
 function parseQuery(q) {
   const terms = [];
@@ -1658,7 +1673,7 @@ $('#btn-new-folder').addEventListener('click', async () => {
 });
 $('#btn-sort').addEventListener('click', (e) => {
   const opt = (key, label) => ({ label, icon: S.sort === key ? 'check' : 'minus', action: () => { S.sort = key; localStorage.setItem('allnote-sort', key); renderTree(); } });
-  popupMenu(e.currentTarget, [opt('title', 'File name (A to Z)'), opt('updated', 'Modified time (new to old)'), opt('created', 'Created time (new to old)')]);
+  popupMenu(e.currentTarget, [opt('title', 'File name (A to Z)'), opt('updated', 'Modified time (new to old)'), opt('created', 'Created time (new to old)'), opt('custom', 'Custom order (drag and drop)')]);
 });
 $('#btn-collapse-all').addEventListener('click', () => {
   S.expanded.clear();
@@ -1682,6 +1697,10 @@ $('#tree').addEventListener('contextmenu', (e) => {
   const row = e.target.closest('.row');
   if (!row) return;
   e.preventDefault();
+  treeMenu(row);
+});
+
+function treeMenu(row) {
   const key = row.dataset.folder;
   if (key && !key.startsWith('@')) {
     popupMenu(row, [
@@ -1699,6 +1718,173 @@ $('#tree').addEventListener('contextmenu', (e) => {
     }
     popupMenu(row, items);
   }
+}
+
+// ============================================================ drag and drop in the file tree
+const parentOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1);
+const joinPath = (a, b) => (a ? `${a}/${b}` : b);
+const inside = (p, folder) => p === folder || p.startsWith(`${folder}/`);
+const folderNotes = (path) => [...S.notes.values()]
+  .filter((n) => n.role === 'owner' && !n.trashed && n.notebook === path)
+  .sort(SORTS[S.sort] || SORTS.title);
+function childFolders(parent) {
+  const set = new Set();
+  for (const n of S.notes.values()) {
+    if (n.role !== 'owner' || n.trashed || !n.notebook) continue;
+    if (parent && !n.notebook.startsWith(`${parent}/`)) continue;
+    const rest = parent ? n.notebook.slice(parent.length + 1) : n.notebook;
+    set.add(joinPath(parent, rest.split('/')[0]));
+  }
+  return sortFolders([...set]);
+}
+function expandPath(path) {
+  let p = '';
+  for (const part of path.split('/').filter(Boolean)) {
+    p = joinPath(p, part);
+    S.expanded.add(p);
+  }
+  saveExpanded();
+}
+
+function describeRow(row) {
+  if (!row) return { kind: 'root' };
+  if (row.dataset.id) return { kind: 'note', id: row.dataset.id, parent: row.dataset.parent || null };
+  const key = row.dataset.folder;
+  return key.startsWith('@') ? { kind: 'virtual', key } : { kind: 'folder', path: key };
+}
+
+function acceptDrop(src, t, zone) {
+  if (src.kind === 'note') {
+    const n = S.notes.get(src.id);
+    if (!n) return null;
+    if (t.kind === 'virtual') {
+      if (t.key === '@pinned') return n.pinned || n.trashed ? null : 'into';
+      if (t.key === '@trash') return n.trashed ? null : 'into';
+      return null;
+    }
+    if (t.kind === 'note') return t.parent || t.id === src.id ? null : zone;
+    if (t.kind === 'folder') return 'into';
+    return 'root';
+  }
+  if (t.kind === 'virtual' || (t.kind === 'note' && t.parent)) return null;
+  if (t.kind === 'folder') return inside(t.path, src.path) ? null : zone;
+  if (t.kind === 'note') return inside(S.notes.get(t.id)?.notebook ?? '', src.path) ? null : zone;
+  return parentOf(src.path) ? 'root' : null;
+}
+
+/** Puts notes into one folder in exactly this order (optimistic, then saved in one request). */
+async function arrangeNotes(folder, ids) {
+  ids.forEach((id, i) => S.notes.set(id, { ...S.notes.get(id), notebook: folder, position: i }));
+  S.rev++;
+  renderTree();
+  const { notes } = await post('/api/notes/reorder', { notebook: folder, ids });
+  notes.forEach(upsert);
+  if (S.currentId && ids.includes(S.currentId)) applyRoleUI();
+}
+
+async function moveFolder(from, to) {
+  const remap = (p) => (inside(p, from) ? to + p.slice(from.length) : p);
+  for (const n of S.notes.values()) {
+    if (n.role === 'owner' && inside(n.notebook, from)) S.notes.set(n.id, { ...n, notebook: remap(n.notebook) });
+  }
+  S.expanded = new Set([...S.expanded].map(remap));
+  saveExpanded();
+  if (S.activeFolder) S.activeFolder = remap(S.activeFolder);
+  const order = S.me.folderOrder || [];
+  if (order.some((p) => inside(p, from))) await saveFolderOrder(order.map(remap));
+  S.rev++;
+  renderTree();
+  const { notes } = await post('/api/notes/move-folder', { from, to });
+  notes.forEach(upsert);
+  if (S.currentId) applyRoleUI();
+}
+
+async function saveFolderOrder(order) {
+  S.me.folderOrder = [...new Set(order)];
+  renderTree();
+  const { user } = await put('/api/account/folder-order', { order: S.me.folderOrder });
+  S.me.folderOrder = user.folderOrder;
+}
+
+async function dropNote(id, t, zone) {
+  const n = S.notes.get(id);
+  if (t.kind === 'virtual') {
+    if (t.key === '@trash') return trashNote(id);
+    const { note } = await put(`/api/notes/${id}`, { pinned: true });
+    upsert(note);
+    if (S.currentId === id) applyRoleUI();
+    return toast(`Pinned “${n.title || 'Untitled'}”`);
+  }
+  if (n.trashed) upsert((await put(`/api/notes/${id}`, { trashed: false })).note);
+  const folder = t.kind === 'root' ? '' : t.kind === 'folder' ? t.path : S.notes.get(t.id).notebook;
+  const list = folderNotes(folder).filter((x) => x.id !== id);
+  let at = list.length;
+  if (t.kind === 'note') {
+    at = list.findIndex((x) => x.id === t.id) + (zone === 'after' ? 1 : 0);
+    if (S.sort !== 'custom') {
+      S.sort = 'custom';
+      localStorage.setItem('allnote-sort', 'custom');
+      toast('Sorting by custom order. Change it with the Sort button.');
+    }
+  }
+  list.splice(at, 0, n);
+  if (folder) expandPath(folder);
+  await arrangeNotes(folder, list.map((x) => x.id));
+  if (folder !== n.notebook || n.trashed) toast(`Moved “${n.title || 'Untitled'}” to ${folder || 'the top level'}`);
+}
+
+async function dropFolder(path, t, zone) {
+  let newParent;
+  let sibling = null;
+  if (t.kind === 'root') newParent = '';
+  else if (t.kind === 'note') newParent = S.notes.get(t.id).notebook;
+  else if (zone === 'into') newParent = t.path;
+  else {
+    newParent = parentOf(t.path);
+    sibling = t.path;
+  }
+  let current = path;
+  const target = joinPath(newParent, baseOf(path));
+  if (target !== path) {
+    if (childFolders(newParent).includes(target)
+      && !(await confirmDialog(`A folder named “${baseOf(path)}” already exists there. Merge the two folders?`, { okText: 'Merge' }))) return;
+    if (newParent) expandPath(newParent);
+    await moveFolder(path, target);
+    current = target;
+    toast(`Moved “${baseOf(path)}” to ${newParent || 'the top level'}`);
+  }
+  if (sibling) {
+    const sibs = childFolders(newParent).filter((p) => p !== current);
+    sibs.splice(sibs.indexOf(sibling) + (zone === 'after' ? 1 : 0), 0, current);
+    const order = (S.me.folderOrder || []).filter((p) => !sibs.includes(p));
+    await saveFolderOrder([...order, ...sibs]);
+  }
+}
+
+treeDrag = enableTreeDrag($('#tree'), {
+  describe: describeRow,
+  canDrag: (d) => (d.kind === 'note' ? S.notes.get(d.id)?.role === 'owner' : d.kind === 'folder'),
+  accept: acceptDrop,
+  label: (d) => (d.kind === 'note' ? S.notes.get(d.id)?.title || 'Untitled' : baseOf(d.path)),
+  expand: (path) => {
+    if (S.expanded.has(path)) return false;
+    S.expanded.add(path);
+    saveExpanded();
+    renderTree();
+    return false; // renderTree already redrew the marker
+  },
+  onHold: (row) => treeMenu(row),
+  onDrop: async (src, t, zone) => {
+    try {
+      if (src.kind === 'note') await dropNote(src.id, t, zone);
+      else await dropFolder(src.path, t, zone);
+    } catch (err) {
+      toast(err.message, 'error');
+      await loadNotes().catch(() => {});
+      renderAll();
+    }
+  },
 });
 
 $('#search').addEventListener('input', (e) => {
@@ -1726,18 +1912,16 @@ $('#tabs').addEventListener('auxclick', (e) => {
 async function renameNotebook(path) {
   const name = await promptDialog('Rename folder', { value: path, okText: 'Rename' });
   if (!name || name === path) return;
-  const target = name.replace(/^\/+|\/+$/g, '');
-  const affected = [...S.notes.values()].filter((n) => n.role === 'owner' && (n.notebook === path || n.notebook.startsWith(`${path}/`)));
-  await Promise.all(affected.map(async (n) => {
-    const { note } = await put(`/api/notes/${n.id}`, { notebook: target + n.notebook.slice(path.length) });
-    upsert(note);
-  }));
-  if (S.expanded.delete(path)) S.expanded.add(target);
-  saveExpanded();
-  if (S.activeFolder === path) S.activeFolder = target;
-  if (S.currentId) applyRoleUI();
-  renderAll();
-  toast(`Renamed to ${target}`);
+  const target = name.split('/').map((s) => s.trim()).filter(Boolean).join('/');
+  if (!target || target === path) return;
+  if (inside(target, path)) return toast('A folder cannot be moved into itself', 'error');
+  try {
+    await moveFolder(path, target);
+    renderAll();
+    toast(`Renamed to ${target}`);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
 }
 
 function toggleSidebar() {

@@ -45,8 +45,18 @@ export function publicUser(u) {
     status: accountStatus(u),
     expiresAt: u.expires_at ?? null,
     tourDone: Boolean(u.tour_done),
+    folderOrder: parseList(u.folder_order),
     createdAt: u.created_at,
   };
+}
+
+function parseList(json) {
+  try {
+    const v = JSON.parse(json || '[]');
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 /** 'active' | 'pending' (waiting for admin approval) | 'expired'. Administrators are always active. */

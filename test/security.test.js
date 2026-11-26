@@ -61,6 +61,8 @@ test('locked accounts are blocked from every feature endpoint, including the liv
     ['DELETE', `/api/notes/${note.id}`], ['GET', `/api/notes/${note.id}/history`], ['GET', `/api/notes/${note.id}/shares`],
     ['POST', `/api/notes/${note.id}/shares`, { email: 'user@x.io' }], ['POST', `/api/notes/${note.id}/presence`, { state: 'viewing' }],
     ['PUT', `/api/notes/${note.id}/publish`, { published: true }], ['GET', '/api/events'],
+    ['POST', '/api/notes/reorder', { notebook: 'x', ids: [note.id] }], ['POST', '/api/notes/move-folder', { from: 'a', to: 'b' }],
+    ['PUT', '/api/account/folder-order', { order: ['x'] }],
     ['PUT', '/api/account', { name: 'z' }], ['POST', '/api/account/password', { currentPassword: 'password123', newPassword: 'password456' }],
     ['POST', '/api/account/2fa/setup'],
   ];

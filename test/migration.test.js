@@ -48,6 +48,8 @@ test('v1.0 database upgrades without losing accounts, sessions or notes', async 
   const notes = (await second('GET', '/api/notes')).data.notes;
   assert.equal(notes.length, 1);
   assert.equal(notes[0].content, 'kept');
+  assert.equal(notes[0].position, null, 'existing notes get no manual position until they are dragged');
+  assert.deepEqual(b.data.user.folderOrder, []);
 
   const old = srv.client();
   old.jar.set('an_sid', 'legacy-session');
