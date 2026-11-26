@@ -1,15 +1,12 @@
 import { hydrateIcons, icon } from './icons.js';
 import { renderInto } from './markdown.js';
+import { bindThemeToggles, autoFieldIcons } from './common.js';
 
 hydrateIcons();
+bindThemeToggles();
+autoFieldIcons();
 const $ = (s) => document.querySelector(s);
 const slug = decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] || '');
-
-$('#btn-theme').addEventListener('click', () => {
-  const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = t;
-  localStorage.setItem('allnote-theme', t);
-});
 
 fetch('/api/config').then((r) => r.json()).then((c) => {
   document.querySelectorAll('.app-name').forEach((n) => { n.textContent = c.appName; });

@@ -14,7 +14,7 @@
   <div class="pub">
     <header class="pub-head">
       <a class="brand" href="/"><img src="/favicon.svg" alt=""><span class="app-name">AllNote</span></a>
-      <button class="icon-btn" id="btn-theme" title="Toggle dark mode"><i data-icon="moon"></i></button>
+      <button class="icon-btn" id="btn-theme" data-theme-toggle></button>
     </header>
     <div id="pub-loading" class="muted">Loading…</div>
 
@@ -23,7 +23,7 @@
       <h2>This page is protected</h2>
       <p class="muted">Enter the PIN you received to view it.</p>
       <div id="pin-error" class="alert error hidden"></div>
-      <input name="pin" type="password" inputmode="text" autocomplete="off" maxlength="12" required autofocus>
+      <input name="pin" type="password" inputmode="text" autocomplete="off" maxlength="12" required autofocus aria-label="PIN">
       <button class="btn primary block">Unlock</button>
     </form>
 

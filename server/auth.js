@@ -1,27 +1,22 @@
 import express from 'express';
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
-import { db } from './db.js';
+import { db, tx } from './db.js';
 import { config, emailAllowed } from './config.js';
 import {
-  newId, now, hashSecret, verifySecret, generateTotpSecret, verifyTotp, generateRecoveryCodes,
+  now, hashSecret, verifySecret, generateTotpSecret, verifyTotp, generateRecoveryCodes,
   rateLimit, resetRateLimit, setCookie, clearCookie,
 } from './security.js';
 import {
-  createSession, destroySession, destroyOtherSessions, publicUser, requireAuth, requireAdmin,
+  createSession, destroySession, destroyOtherSessions, publicUser, requireAuth, requireActive, accountStatus,
 } from './sessions.js';
 import {
-  getSetting, setSetting, googleSettings, googleRedirectUri, hasUsers, signupAllowed,
+  googleSettings, googleRedirectUri, hasUsers, signupAllowed, approvalRequired, landingEnabled,
 } from './settings.js';
+import { EMAIL_RE, MIN_PASSWORD, getUserByEmail, getUserById, createUser } from './users.js';
+import { BUILD_ID } from './build.js';
 
 export const authRouter = express.Router();
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const getUserByEmail = db.prepare('SELECT * FROM users WHERE email = ?');
-const getUserById = db.prepare('SELECT * FROM users WHERE id = ?');
-// Atomic: the first account ever created becomes the admin.
-const insertUser = db.prepare(`INSERT INTO users (id, email, name, avatar, password_hash, google_id, created_at, is_admin)
-  VALUES (?, ?, ?, ?, ?, ?, ?, NOT EXISTS (SELECT 1 FROM users))`);
 
 function loginResponse(res, user) {
   if (user.totp_enabled) {
@@ -33,7 +28,17 @@ function loginResponse(res, user) {
 }
 
 authRouter.get('/api/config', (_req, res) => {
-  res.json({ appName: config.appName, google: googleSettings().enabled, allowSignup: signupAllowed(), setupRequired: !hasUsers() });
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    appName: config.appName,
+    version: config.version,
+    build: BUILD_ID,
+    google: googleSettings().enabled,
+    allowSignup: signupAllowed(),
+    approvalRequired: approvalRequired(),
+    setupRequired: !hasUsers(),
+    landing: landingEnabled(),
+  });
 });
 
 authRouter.post('/api/auth/register', (req, res) => {
@@ -43,11 +48,10 @@ authRouter.post('/api/auth/register', (req, res) => {
   if (!rateLimit(`reg:${req.ip}`, 10, 3600_000)) return res.status(429).json({ error: 'Too many attempts, try later' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Invalid email' });
   if (!emailAllowed(email)) return res.status(403).json({ error: 'This email is not allowed' });
-  if (typeof password !== 'string' || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
-  if (getUserByEmail.get(email)) return res.status(409).json({ error: 'An account with this email already exists' });
-  const id = newId();
-  insertUser.run(id, email, String(name || email.split('@')[0]).slice(0, 80), null, hashSecret(password), null, now());
-  res.json(loginResponse(res, getUserById.get(id)));
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD) return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
+  if (getUserByEmail(email)) return res.status(409).json({ error: 'An account with this email already exists' });
+  const user = createUser({ email, name, passwordHash: hashSecret(password), approved: !approvalRequired() });
+  res.json(loginResponse(res, user));
 });
 
 authRouter.post('/api/auth/login', (req, res) => {
@@ -55,7 +59,7 @@ authRouter.post('/api/auth/login', (req, res) => {
   const password = req.body?.password;
   const key = `login:${req.ip}:${email}`;
   if (!rateLimit(key, 10, 15 * 60_000)) return res.status(429).json({ error: 'Too many attempts, try again in 15 minutes' });
-  const user = getUserByEmail.get(email);
+  const user = getUserByEmail(email);
   if (!user || !verifySecret(String(password || ''), user.password_hash)) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
@@ -82,7 +86,7 @@ authRouter.post('/api/auth/2fa', (req, res) => {
   resetRateLimit(`2fa:${user.id}`);
   destroySession(req, res);
   createSession(res, user.id, 'full');
-  res.json({ user: publicUser(getUserById.get(user.id)) });
+  res.json({ user: publicUser(getUserById(user.id)) });
 });
 
 authRouter.post('/api/auth/logout', (req, res) => {
@@ -91,31 +95,32 @@ authRouter.post('/api/auth/logout', (req, res) => {
 });
 
 authRouter.get('/api/auth/me', (req, res) => {
+  res.set('Cache-Control', 'no-store');
   if (req.user) return res.json({ user: publicUser(req.user) });
   if (req.pendingUser) return res.json({ user: null, twoFactorRequired: true });
   res.json({ user: null });
 });
 
-// ---------- account ----------
-authRouter.put('/api/account', requireAuth, (req, res) => {
+// ---------- account (locked accounts can only redeem a license or sign out) ----------
+authRouter.put('/api/account', requireActive, (req, res) => {
   const name = String(req.body?.name || '').trim().slice(0, 80);
   if (!name) return res.status(400).json({ error: 'Name is required' });
   db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, req.user.id);
-  res.json({ user: publicUser(getUserById.get(req.user.id)) });
+  res.json({ user: publicUser(getUserById(req.user.id)) });
 });
 
-authRouter.post('/api/account/password', requireAuth, (req, res) => {
+authRouter.post('/api/account/password', requireActive, (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
   if (req.user.password_hash && !verifySecret(String(currentPassword || ''), req.user.password_hash)) {
     return res.status(401).json({ error: 'Current password is incorrect' });
   }
-  if (typeof newPassword !== 'string' || newPassword.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (typeof newPassword !== 'string' || newPassword.length < MIN_PASSWORD) return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSecret(newPassword), req.user.id);
   destroyOtherSessions(req.user.id, req.sessionId);
-  res.json({ user: publicUser(getUserById.get(req.user.id)) });
+  res.json({ user: publicUser(getUserById(req.user.id)) });
 });
 
-authRouter.post('/api/account/2fa/setup', requireAuth, async (req, res) => {
+authRouter.post('/api/account/2fa/setup', requireActive, async (req, res) => {
   if (req.user.totp_enabled) return res.status(400).json({ error: 'Two-factor authentication is already enabled' });
   const secret = generateTotpSecret();
   db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(secret, req.user.id);
@@ -125,51 +130,52 @@ authRouter.post('/api/account/2fa/setup', requireAuth, async (req, res) => {
   res.json({ secret, otpauthUrl, qr });
 });
 
-authRouter.post('/api/account/2fa/enable', requireAuth, (req, res) => {
+authRouter.post('/api/account/2fa/enable', requireActive, (req, res) => {
   if (req.user.totp_enabled) return res.status(400).json({ error: 'Already enabled' });
   if (!verifyTotp(req.user.totp_secret, req.body?.code)) return res.status(400).json({ error: 'Invalid code, check your authenticator app time' });
   const codes = generateRecoveryCodes();
   db.prepare('UPDATE users SET totp_enabled = 1, recovery_codes = ? WHERE id = ?')
     .run(JSON.stringify(codes.map((c) => hashSecret(c))), req.user.id);
   destroyOtherSessions(req.user.id, req.sessionId);
-  res.json({ user: publicUser(getUserById.get(req.user.id)), recoveryCodes: codes });
+  res.json({ user: publicUser(getUserById(req.user.id)), recoveryCodes: codes });
 });
 
-authRouter.post('/api/account/2fa/disable', requireAuth, (req, res) => {
+authRouter.post('/api/account/2fa/disable', requireActive, (req, res) => {
   if (!req.user.totp_enabled) return res.status(400).json({ error: 'Not enabled' });
   if (!rateLimit(`2fadis:${req.user.id}`, 10, 15 * 60_000)) return res.status(429).json({ error: 'Too many attempts' });
   if (!verifyTotp(req.user.totp_secret, req.body?.code)) return res.status(400).json({ error: 'Invalid code' });
   db.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, recovery_codes = NULL WHERE id = ?').run(req.user.id);
-  res.json({ user: publicUser(getUserById.get(req.user.id)) });
+  res.json({ user: publicUser(getUserById(req.user.id)) });
 });
 
-// ---------- admin settings ----------
-function adminSettings(req) {
-  const g = googleSettings();
-  return {
-    allowSignup: getSetting('allow_signup', String(config.allowSignup)) === 'true',
-    google: { clientId: g.clientId, hasSecret: Boolean(g.clientSecret), enabled: g.enabled, redirectUri: googleRedirectUri(req) },
-  };
-}
+authRouter.post('/api/account/tour', requireAuth, (req, res) => {
+  db.prepare('UPDATE users SET tour_done = ? WHERE id = ?').run(req.body?.done === false ? 0 : 1, req.user.id);
+  res.json({ user: publicUser(getUserById(req.user.id)) });
+});
 
-authRouter.get('/api/admin/settings', requireAdmin, (req, res) => res.json(adminSettings(req)));
+export const normalizeLicenseKey = (k) => String(k || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-authRouter.put('/api/admin/settings', requireAdmin, (req, res) => {
-  const { allowSignup, google } = req.body || {};
-  if (allowSignup !== undefined) setSetting('allow_signup', allowSignup ? 'true' : 'false');
-  if (google === null) {
-    setSetting('google_client_id', '');
-    setSetting('google_client_secret', '');
-  } else if (google && typeof google === 'object') {
-    const clientId = String(google.clientId ?? '').trim();
-    const clientSecret = String(google.clientSecret ?? '').trim();
-    if (clientId.length > 300 || clientSecret.length > 300) return res.status(400).json({ error: 'Value is too long' });
-    setSetting('google_client_id', clientId);
-    // Empty secret keeps the stored one, so the admin doesn't have to re-enter it.
-    if (clientSecret) setSetting('google_client_secret', clientSecret);
-    else if (!clientId) setSetting('google_client_secret', '');
+authRouter.post('/api/account/license', requireAuth, (req, res) => {
+  const u = req.user;
+  if (!rateLimit(`lic:${u.id}`, 10, 15 * 60_000) || !rateLimit(`lic-ip:${req.ip}`, 30, 15 * 60_000)) {
+    return res.status(429).json({ error: 'Too many attempts, try again in 15 minutes' });
   }
-  res.json(adminSettings(req));
+  if (u.is_admin) return res.status(400).json({ error: 'Administrator accounts never expire' });
+  if (accountStatus(u) === 'pending') return res.status(403).json({ error: 'Your account must be approved by an administrator first' });
+  if (!u.expires_at) return res.status(400).json({ error: 'Your account does not expire, no license is needed' });
+  const key = normalizeLicenseKey(req.body?.key);
+  const lic = key && db.prepare("SELECT * FROM licenses WHERE replace(key, '-', '') = ?").get(key);
+  if (!lic || lic.revoked || lic.redeemed_at) return res.status(400).json({ error: 'This license key is invalid or has already been used' });
+  const expiresAt = Math.max(now(), u.expires_at) + lic.days * 86_400_000;
+  let claimed = false;
+  tx(() => {
+    claimed = db.prepare('UPDATE licenses SET redeemed_by = ?, redeemed_email = ?, redeemed_at = ? WHERE key = ? AND redeemed_at IS NULL AND revoked = 0')
+      .run(u.id, u.email, now(), lic.key).changes > 0;
+    if (claimed) db.prepare('UPDATE users SET expires_at = ? WHERE id = ?').run(expiresAt, u.id);
+  });
+  if (!claimed) return res.status(400).json({ error: 'This license key is invalid or has already been used' });
+  resetRateLimit(`lic:${u.id}`);
+  res.json({ user: publicUser(getUserById(u.id)), days: lic.days });
 });
 
 // ---------- Google single sign-on (OpenID Connect authorization code flow) ----------
@@ -192,7 +198,7 @@ authRouter.get('/auth/google', (req, res) => {
 });
 
 authRouter.get('/auth/google/callback', async (req, res) => {
-  const fail = (msg) => res.redirect(`/?error=${encodeURIComponent(msg)}`);
+  const fail = (msg) => res.redirect(`/login?error=${encodeURIComponent(msg)}`);
   try {
     const google = googleSettings();
     if (!google.enabled) return fail('Google sign-in is not configured');
@@ -227,16 +233,14 @@ authRouter.get('/auth/google/callback', async (req, res) => {
     const email = claims.email.toLowerCase();
     if (!emailAllowed(email)) return fail('This email is not allowed');
 
-    let user = db.prepare('SELECT * FROM users WHERE google_id = ?').get(claims.sub) || getUserByEmail.get(email);
+    let user = db.prepare('SELECT * FROM users WHERE google_id = ?').get(claims.sub) || getUserByEmail(email);
     if (user) {
       db.prepare('UPDATE users SET google_id = ?, avatar = COALESCE(?, avatar) WHERE id = ?').run(claims.sub, claims.picture || null, user.id);
     } else {
       if (!signupAllowed()) return fail('Sign up is disabled');
-      const id = newId();
-      insertUser.run(id, email, String(claims.name || email.split('@')[0]).slice(0, 80), claims.picture || null, null, claims.sub, now());
-      user = getUserById.get(id);
+      user = createUser({ email, name: claims.name, avatar: claims.picture || null, googleId: claims.sub, approved: !approvalRequired() });
     }
-    loginResponse(res, getUserById.get(user.id));
+    loginResponse(res, getUserById(user.id));
     res.redirect('/');
   } catch (err) {
     console.error('Google callback error', err);

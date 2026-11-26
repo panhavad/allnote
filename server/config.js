@@ -18,9 +18,11 @@ function loadSessionSecret() {
 
 const port = Number(env.PORT || 3000);
 const publicUrl = (env.PUBLIC_URL || '').replace(/\/+$/, '');
+const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 export const config = {
   appName: env.APP_NAME || 'AllNote',
+  version: pkg.version,
   port,
   // Empty = derive from each request (Host + X-Forwarded-Proto), e.g. behind a tunnel.
   publicUrl,

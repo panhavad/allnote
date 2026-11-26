@@ -4,8 +4,12 @@ services:
   app:
     build: .
     restart: unless-stopped
+    # No published ports: the tunnel reaches it on tunnel_net at http://allnote:80
+    sysctls:
+      - net.ipv4.ip_unprivileged_port_start=0
     environment:
       APP_NAME: ${APP_NAME:-AllNote}
+      PORT: ${PORT:-80}
       # Leave empty to derive the URL from the incoming request (works behind the tunnel).
       PUBLIC_URL: ${PUBLIC_URL:-}
       SESSION_SECRET: ${SESSION_SECRET:-}
@@ -17,10 +21,13 @@ services:
     volumes:
       - allnote-data:/data
     networks:
-      - tunnel_net
+      tunnel_net:
+        aliases:
+          - allnote
 
 networks:
   tunnel_net:
+    name: tunnel_net
     external: true
 
 volumes:

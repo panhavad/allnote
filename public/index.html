@@ -12,6 +12,11 @@
 <body>
   <!-- ============ Sign in ============ -->
   <div id="auth" class="auth hidden">
+    <div class="auth-top">
+      <a href="/welcome" class="btn ghost sm hidden" id="auth-home"><i data-icon="back" data-size="15"></i> Home</a>
+      <span class="spacer"></span>
+      <button class="icon-btn" type="button" data-theme-toggle></button>
+    </div>
     <div class="auth-card">
       <div class="brand big"><img src="/favicon.svg" alt=""><span class="app-name">AllNote</span></div>
       <p class="auth-sub" id="auth-sub">Linked notes, shared and published from anywhere.</p>
@@ -27,6 +32,7 @@
         <label>Name<input name="name" autocomplete="name" required></label>
         <label>Email<input name="email" type="email" autocomplete="email" required></label>
         <label>Password<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+        <p class="hint hidden" id="approval-hint"><i data-icon="info" data-size="14"></i> New accounts are activated by an administrator after sign up.</p>
         <button class="btn primary block" type="submit">Create account</button>
       </form>
 
@@ -46,6 +52,7 @@
       </div>
       <p class="auth-switch" id="auth-switch"></p>
     </div>
+    <p class="auth-version"><span class="app-name">AllNote</span> <span class="app-version"></span></p>
   </div>
 
   <!-- ============ App ============ -->
@@ -72,7 +79,7 @@
       </div>
 
       <div class="sb-panel hidden" id="panel-search">
-        <div class="search-box"><i data-icon="search" data-size="15"></i><input id="search" type="search" placeholder="Search…" autocomplete="off"></div>
+        <div class="search-box"><i data-icon="search" data-size="15"></i><input id="search" type="search" placeholder="Search…" autocomplete="off" data-bare></div>
         <div id="search-results" class="results"></div>
       </div>
 
@@ -82,10 +89,13 @@
 
       <div class="sb-foot">
         <button class="vault" id="btn-account" title="Account & security"><span id="me-avatar"></span><span class="user-name" id="me-name"></span></button>
-        <button class="icon-btn sm" id="btn-theme" title="Toggle dark mode"><i data-icon="moon" data-size="17"></i></button>
+        <button class="icon-btn sm hidden" id="btn-admin" title="Admin console"><i data-icon="admin" data-size="17"></i><span class="dot-badge hidden" id="admin-badge"></span></button>
+        <button class="icon-btn sm" id="btn-help" title="Help, tour and shortcuts"><i data-icon="help" data-size="17"></i></button>
+        <button class="icon-btn sm" id="btn-theme" data-theme-toggle data-size="17" title="Toggle dark mode"><i data-icon="moon" data-size="17"></i></button>
         <button class="icon-btn sm" id="btn-settings" title="Settings"><i data-icon="settings" data-size="17"></i></button>
         <button class="icon-btn sm" id="btn-logout" title="Sign out"><i data-icon="logout" data-size="17"></i></button>
       </div>
+      <div class="sb-meta"><span class="app-name">AllNote</span> <span class="app-version"></span></div>
     </aside>
     <div class="scrim" id="scrim"></div>
 
@@ -108,7 +118,7 @@
 
       <div id="editor" class="editor hidden">
         <div class="ed-top">
-          <div class="crumb"><i data-icon="folder" data-size="15"></i><input id="ed-notebook" list="notebook-options" placeholder="No folder" autocomplete="off"><datalist id="notebook-options"></datalist></div>
+          <div class="crumb"><i data-icon="folder" data-size="15"></i><input id="ed-notebook" list="notebook-options" placeholder="No folder" autocomplete="off" data-bare><datalist id="notebook-options"></datalist></div>
           <div class="presence" id="presence"></div>
           <div class="ed-actions">
             <div class="seg" id="mode-seg">
@@ -126,7 +136,7 @@
           </div>
         </div>
         <div id="ed-banner" class="banner hidden"></div>
-        <input id="ed-title" class="ed-title" placeholder="Untitled" autocomplete="off">
+        <input id="ed-title" class="ed-title" placeholder="Untitled" autocomplete="off" data-bare aria-label="Note title">
         <div class="ed-toolbar" id="toolbar">
           <button data-fmt="bold" title="Bold (Ctrl+B)"><i data-icon="bold" data-size="16"></i></button>
           <button data-fmt="italic" title="Italic (Ctrl+I)"><i data-icon="italic" data-size="16"></i></button>
@@ -168,6 +178,24 @@
       <section><h4>Tags</h4><div id="note-tags" class="tag-cloud"></div></section>
       <section><h4>Info</h4><div id="note-info" class="note-info"></div></section>
     </aside>
+
+    <div id="lock" class="lock hidden" role="alertdialog" aria-modal="true" aria-labelledby="lock-title" aria-describedby="lock-text">
+      <div class="lock-card">
+        <div class="lock-ico" id="lock-ico"></div>
+        <h2 id="lock-title"></h2>
+        <p id="lock-text" class="muted"></p>
+        <form id="lock-license" class="form hidden">
+          <label>License key<input name="key" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" autocapitalize="characters" required></label>
+          <button class="btn primary block" type="submit"><i data-icon="ticket" data-size="16"></i> Activate account</button>
+        </form>
+        <div class="lock-actions">
+          <button class="btn" id="lock-check" type="button"><i data-icon="refresh" data-size="15"></i> Check status</button>
+          <button class="btn" id="lock-logout" type="button"><i data-icon="logout" data-size="15"></i> Sign out</button>
+          <button class="icon-btn" type="button" data-theme-toggle></button>
+        </div>
+        <p class="lock-foot"><span id="lock-user"></span> <span class="sep-dot"></span> <span class="app-name">AllNote</span> <span class="app-version"></span></p>
+      </div>
+    </div>
   </div>
 
   <div id="suggest" class="suggest hidden"></div>

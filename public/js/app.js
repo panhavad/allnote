@@ -8,6 +8,11 @@ import { createGraph } from './graph.js';
 import {
   $, $$, h, toast, modal, confirmDialog, promptDialog, popupMenu, avatarHtml, timeAgo, fmtDate, copyText, download,
 } from './ui.js';
+import {
+  bindThemeToggles, autoFieldIcons, showVersion, watchForUpdates,
+} from './common.js';
+import { startTour } from './tour.js';
+import { openAdmin } from './admin.js';
 
 // ============================================================ state
 const S = {
@@ -32,26 +37,41 @@ const isWide = () => window.innerWidth > 1440;
 
 // ============================================================ boot
 hydrateIcons();
+bindThemeToggles();
+autoFieldIcons();
 boot();
 
 async function boot() {
   S.config = await get('/api/config').catch(() => ({ appName: 'AllNote' }));
   document.title = S.config.appName;
   $$('.app-name').forEach((n) => { n.textContent = S.config.appName; });
+  showVersion(S.config);
+  S.checkUpdate = watchForUpdates(S.config.build, {
+    beforeReload: async (cfg) => {
+      toast(`Updating to version ${cfg.version}`);
+      await flushSave().catch(() => {});
+    },
+  });
   const me = await get('/api/auth/me').catch(() => ({ user: null }));
   const err = new URLSearchParams(location.search).get('error');
-  if (err) history.replaceState(null, '', location.pathname + location.hash);
+  const path = location.pathname;
+  if (err || path === '/login' || path === '/signup') history.replaceState(null, '', `/${location.hash}`);
   if (me.user) return startApp(me.user);
-  showAuth(me.twoFactorRequired ? '2fa' : (S.config.setupRequired ? 'register' : 'login'), err);
+  let mode = 'login';
+  if (me.twoFactorRequired) mode = '2fa';
+  else if (S.config.setupRequired || (path === '/signup' && S.config.allowSignup)) mode = 'register';
+  showAuth(mode, err);
 }
 
 // ============================================================ auth screen
 function showAuth(mode = 'login', error = '') {
   $('#app').classList.add('hidden');
   $('#auth').classList.remove('hidden');
+  $('#auth-home').classList.toggle('hidden', !S.config.landing || S.config.setupRequired);
   ['login', 'register', 'twofa'].forEach((m) => $(`#${m}-form`).classList.toggle('hidden', m !== (mode === '2fa' ? 'twofa' : mode)));
   $('#google-block').classList.toggle('hidden', !S.config.google || mode === '2fa');
   const setup = S.config.setupRequired && mode === 'register';
+  $('#approval-hint').classList.toggle('hidden', setup || !S.config.approvalRequired);
   $('#auth-sub').textContent = setup
     ? 'Welcome! Create the first account — it becomes the administrator.'
     : 'Linked notes, shared and published from anywhere.';
@@ -103,6 +123,7 @@ $('#twofa-cancel').addEventListener('click', async () => {
 });
 
 // ============================================================ app start
+let appStarted = false;
 async function startApp(user) {
   S.me = user;
   $('#auth').classList.add('hidden');
@@ -115,17 +136,176 @@ async function startApp(user) {
   renderMe();
   el.info.classList.toggle('collapsed', localStorage.getItem('allnote-info') === '0' || !isWide());
   el.app.classList.toggle('sb-collapsed', localStorage.getItem('allnote-sidebar') === '0');
+  if (user.status !== 'active') return showLock(user);
+  appStarted = true;
   await loadNotes();
   connectEvents();
   renderAll();
   route();
   if (!S.currentId && S.tabs.length) openNote(S.tabs[S.tabs.length - 1]);
+  if (user.isAdmin) refreshAdminBadge();
+  scheduleExpiryCheck();
+  if (!user.isAdmin && user.expiresAt && user.expiresAt - Date.now() < 7 * 86_400_000) {
+    toast(`Your account expires on ${new Date(user.expiresAt).toLocaleDateString()}. Redeem a license key in Settings to extend it.`);
+  }
+  if (!user.tourDone) setTimeout(() => runTour(), 400);
 }
+
+// ============================================================ locked accounts (pending approval / expired)
+let lockPoll = null;
+function showLock(user) {
+  S.me = user;
+  S.es?.close();
+  S.es = null;
+  closeAllModals();
+  el.app.classList.add('locked');
+  ['#sidebar', '#editor-pane', '#info-pane'].forEach((s) => $(s)?.setAttribute('inert', ''));
+  const pending = user.status === 'pending';
+  $('#lock-ico').innerHTML = icon(pending ? 'hourglass' : 'ban', 34);
+  $('#lock-title').textContent = pending ? 'Waiting for approval' : 'Your account has expired';
+  $('#lock-text').textContent = pending
+    ? 'An administrator needs to approve your account before you can use the app. This page unlocks automatically once you are approved.'
+    : `Your access ended on ${new Date(user.expiresAt).toLocaleDateString(undefined, { dateStyle: 'long' })}. Enter a license key to reactivate your account, or ask your administrator to renew it.`;
+  $('#lock-license').classList.toggle('hidden', pending);
+  $('#lock-user').textContent = user.email;
+  $('#lock').classList.remove('hidden');
+  clearInterval(lockPoll);
+  lockPoll = setInterval(() => checkAccount({ quiet: true }), 20_000);
+  setTimeout(() => (pending ? $('#lock-check') : $('#lock-license input')).focus(), 50);
+}
+
+function closeAllModals() {
+  $('#modal-root').replaceChildren();
+  document.querySelector('.tour')?.remove();
+  document.querySelector('.menu')?.remove();
+}
+
+/** Re-read the account and lock or unlock the UI when an admin (or time) changed it. */
+async function checkAccount({ quiet = false } = {}) {
+  let me;
+  try {
+    me = await get('/api/auth/me');
+  } catch {
+    if (!quiet) toast('Could not reach the server', 'error');
+    return;
+  }
+  if (!me.user) return location.replace('/');
+  const wasLocked = el.app.classList.contains('locked');
+  if (me.user.status === 'active') {
+    if (wasLocked || !appStarted) return location.reload();
+    S.me = me.user;
+    renderMe();
+    scheduleExpiryCheck();
+  } else {
+    showLock(me.user);
+    if (!quiet && wasLocked) toast(me.user.status === 'pending' ? 'Still waiting for approval' : 'Account is still expired');
+  }
+}
+window.addEventListener('allnote:account', () => checkAccount({ quiet: true }));
+
+let expiryTimer = null;
+function scheduleExpiryCheck() {
+  clearTimeout(expiryTimer);
+  const ms = S.me?.expiresAt ? S.me.expiresAt - Date.now() : Infinity;
+  if (ms < 2 ** 31 - 1) expiryTimer = setTimeout(() => checkAccount({ quiet: true }), Math.max(0, ms) + 1000);
+}
+
+$('#lock-check').addEventListener('click', () => checkAccount());
+$('#lock-logout').addEventListener('click', async () => {
+  await post('/api/auth/logout').catch(() => {});
+  location.href = '/';
+});
+$('#lock-license').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  try {
+    const r = await post('/api/account/license', { key: e.target.key.value });
+    toast(`License activated: valid until ${new Date(r.user.expiresAt).toLocaleDateString()}`);
+    setTimeout(() => location.reload(), 900);
+  } catch (err) {
+    toast(err.message, 'error');
+    btn.disabled = false;
+  }
+});
 
 function renderMe() {
   $('#me-avatar').innerHTML = avatarHtml(S.me, 'sm');
   $('#me-name').textContent = S.me.name;
+  $('#btn-admin').classList.toggle('hidden', !S.me.isAdmin);
 }
+
+async function refreshAdminBadge(pending) {
+  if (!S.me?.isAdmin) return;
+  if (pending === undefined) pending = (await get('/api/admin/summary').catch(() => ({ pending: 0 }))).pending;
+  const b = $('#admin-badge');
+  b.classList.toggle('hidden', !pending);
+  $('#btn-admin').title = pending ? `Admin console (${pending} waiting for approval)` : 'Admin console';
+}
+
+// ============================================================ onboarding tour & help
+function tourSteps() {
+  const steps = [
+    { title: `Welcome to ${S.config.appName}`, icon: 'compass', text: 'A quick tour of the essentials. It takes under a minute, and you can replay it any time from the Help button.' },
+    { target: '#btn-new', icon: 'newnote', title: 'Create a note', text: 'Start a new note here (Alt+N). Notes are Markdown and save automatically as you type.' },
+    { target: '#btn-new-folder', icon: 'newfolder', title: 'Organise with folders', text: 'Group notes into folders and sub-folders such as Work/Projects. Right-click a folder to rename it.' },
+    { target: '#tree', icon: 'folder', title: 'Your notes', text: 'Pinned notes, folders, notes shared with you and the trash all live in this tree.' },
+    { target: '[data-view="search"]', icon: 'search', title: 'Search everything', text: 'Full-text search with filters like tag:work or notebook:Projects. Press Ctrl+K to jump to any note.' },
+    { target: '[data-view="tags"]', icon: 'hash', title: 'Tags', text: 'Write #tags anywhere in a note. They are collected here, including nested tags like #work/alpha.' },
+    { target: '#btn-daily', icon: 'calendar', title: "Today's note", text: 'One click opens a daily note for journaling, meeting notes or a to-do list.' },
+    { target: '#btn-graph', icon: 'graph', title: 'Graph view', text: 'Link notes with [[Note title]] and see how your ideas connect.' },
+    { target: '#empty-state', icon: 'edit', title: 'The editor', text: 'Open a note to write in live preview. The toolbar above a note lets you share it, publish it to the web with an optional PIN and browse its version history.' },
+    { target: '#btn-theme', icon: 'sun', title: 'Light or dark', text: 'Switch between light and dark mode. Your choice is remembered on this device.' },
+    { target: '#btn-settings', icon: 'settings', title: 'Account and security', text: 'Change your password, turn on two-factor authentication with an authenticator app and export your notes.' },
+  ];
+  if (S.me.isAdmin) steps.push({ target: '#btn-admin', icon: 'admin', title: 'Admin console', text: 'Approve new users, set expiration dates, generate license keys and configure Google sign-in.' });
+  steps.push({ target: '#btn-help', icon: 'help', title: 'Replay the tour any time', text: 'Open Help to replay this tour, see keyboard shortcuts and check the app version.' });
+  return steps;
+}
+
+async function runTour() {
+  closeAllModals();
+  const mobile = isMobile();
+  if (mobile) el.app.classList.add('nav-open');
+  else if (el.app.classList.contains('sb-collapsed')) toggleSidebar();
+  await startTour(tourSteps());
+  if (mobile) el.app.classList.remove('nav-open');
+  if (!S.me.tourDone) {
+    S.me.tourDone = true;
+    post('/api/account/tour', { done: true }).catch(() => {});
+  }
+}
+
+function openShortcuts() {
+  const rows = [
+    ['Ctrl/Cmd + K', 'Quick switcher (find or create a note)'], ['Alt + N', 'New note'], ['Ctrl/Cmd + E', 'Toggle live preview / reading view'],
+    ['Ctrl/Cmd + S', 'Save now'], ['Ctrl/Cmd + B / I', 'Bold / italic'], ['Ctrl/Cmd + Enter', 'Toggle checklist on line'],
+    ['Tab / Shift + Tab', 'Indent / outdent'], ['[[', 'Link autocomplete'],
+  ];
+  modal({
+    title: 'Keyboard shortcuts',
+    body: `<table class="shortcuts">${rows.map(([k, d]) => `<tr><td>${k.split(' + ').map((x) => `<kbd>${esc(x)}</kbd>`).join(' + ')}</td><td>${esc(d)}</td></tr>`).join('')}</table>`,
+    foot: '<button class="btn primary" data-close>Close</button>',
+  });
+}
+
+$('#btn-help').addEventListener('click', (e) => {
+  popupMenu(e.currentTarget, [
+    { label: 'Take the tour', icon: 'compass', action: runTour },
+    { label: 'Keyboard shortcuts', icon: 'keyboard', action: openShortcuts },
+    'sep',
+    { label: `${S.config.appName} v${S.config.version || ''}`, icon: 'info', action: () => toast(`${S.config.appName} v${S.config.version} (build ${S.config.build})`) },
+  ]);
+});
+$('#btn-admin').addEventListener('click', () => {
+  openAdmin({
+    me: S.me,
+    onChange: ({ pending, settings }) => {
+      if (pending !== undefined) refreshAdminBadge(pending);
+      if (settings) Object.assign(S.config, { allowSignup: settings.allowSignup, landing: settings.landingPage, google: settings.google.enabled });
+    },
+  });
+});
 
 async function loadNotes() {
   const { notes } = await get('/api/notes');
@@ -152,15 +332,26 @@ async function loadNotes() {
 // ============================================================ realtime (SSE)
 function connectEvents() {
   const es = new EventSource(`/api/events?clientId=${clientId}`);
+  S.es = es;
   let connectedOnce = false;
   es.addEventListener('open', () => {
-    if (connectedOnce) loadNotes().then(renderAll).catch(() => {}); // catch up after reconnects (e.g. app updates)
+    if (connectedOnce) {
+      loadNotes().then(renderAll).catch(() => {}); // catch up after reconnects (e.g. app updates)
+      S.checkUpdate?.();
+    }
     connectedOnce = true;
+  });
+  es.addEventListener('account', () => {
+    es.close();
+    checkAccount({ quiet: true }).then(() => {
+      if (!el.app.classList.contains('locked')) setTimeout(connectEvents, 500);
+    });
   });
   es.addEventListener('error', async () => {
     if (es.readyState === EventSource.CLOSED) {
       const me = await get('/api/auth/me').catch(() => null);
       if (me && !me.user) location.reload();
+      else if (me?.user && me.user.status !== 'active') showLock(me.user);
       else setTimeout(connectEvents, 5000);
     }
   });
@@ -1324,7 +1515,7 @@ function renderInfo() {
       : `<a href="#" class="link-card missing wikilink" data-target="${esc(t)}"><b>${esc(t)}</b><small>Not created yet — click to create</small></a>`;
   }).join('');
   $('#note-tags').innerHTML = (n._tags || []).map((t) => `<a href="#" class="chip" data-tag="${esc(t)}">#${esc(t)}</a>`).join('');
-  const pub = n.publication ? `<a href="/p/${esc(n.publication.slug)}" target="_blank">/p/${esc(n.publication.slug)}</a>${n.publication.hasPin ? ' 🔒' : ''}` : 'No';
+  const pub = n.publication ? `<a href="/p/${esc(n.publication.slug)}" target="_blank">/p/${esc(n.publication.slug)}</a>${n.publication.hasPin ? ` <span title="PIN protected">${icon('lock', 13)}</span>` : ''}` : 'No';
   $('#note-info').innerHTML = `
     <dt>Owner</dt><dd>${esc(n.role === 'owner' ? 'You' : n.owner.name)}</dd>
     <dt>Created</dt><dd>${fmtDate(n.createdAt)}</dd>
@@ -1561,11 +1752,6 @@ $('#btn-collapse').addEventListener('click', toggleSidebar);
 $('#btn-menu').addEventListener('click', toggleSidebar);
 $('#scrim').addEventListener('click', () => $('#app').classList.remove('nav-open'));
 
-$('#btn-theme').addEventListener('click', () => {
-  const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = t;
-  localStorage.setItem('allnote-theme', t);
-});
 $('#btn-logout').addEventListener('click', async () => {
   await flushSave();
   await post('/api/auth/logout').catch(() => {});
@@ -1969,27 +2155,16 @@ function openAccount() {
         <button class="btn" id="exp-all">${icon('download', 15)} Export all notes (JSON)</button>
         <label class="btn">${icon('upload', 15)} Import Markdown files<input type="file" id="imp" accept=".md,.markdown,.txt" multiple hidden></label>
       </div>
-      ${u.isAdmin ? `<div class="section-title">${icon('settings', 18)} Administration <span class="badge">Admin</span></div><div id="admin"><span class="muted">Loading…</span></div>` : ''}`;
-    if (u.isAdmin) renderAdmin();
-  };
-  let admin = null;
-  const renderAdmin = async () => {
-    const box = $('#admin', m.el);
-    if (!box) return;
-    if (!admin) {
-      try { admin = await get('/api/admin/settings'); } catch (err) { box.innerHTML = `<span class="muted">${esc(err.message)}</span>`; return; }
-    }
-    const g = admin.google;
-    box.innerHTML = `<div class="stack">
-      <div class="card"><label class="switch"><input type="checkbox" id="adm-signup" ${admin.allowSignup ? 'checked' : ''}> Allow new users to create accounts</label></div>
-      <form class="card form" id="f-google" autocomplete="off">
-        <div><b>Google single sign-on</b> ${g.enabled ? '<span class="badge">Enabled</span>' : '<small class="muted">(not configured)</small>'}<br>
-        <small class="muted">Google Cloud Console → APIs &amp; Services → Credentials → <i>OAuth client ID</i> (Web application). Add this <b>Authorized redirect URI</b>:</small></div>
-        <div class="row"><input readonly value="${esc(g.redirectUri)}" id="adm-redirect"><button type="button" class="btn" id="adm-copy">${icon('copy', 15)} Copy</button></div>
-        <label>Client ID<input name="clientId" value="${esc(g.clientId)}" placeholder="1234567890-abc.apps.googleusercontent.com" spellcheck="false"></label>
-        <label>Client secret<input name="clientSecret" type="password" placeholder="${g.hasSecret ? 'Saved — leave empty to keep it' : 'GOCSPX-…'}" autocomplete="new-password" spellcheck="false"></label>
-        <div class="row"><button class="btn primary">Save Google settings</button>${g.enabled || g.clientId ? '<button type="button" class="btn danger" id="adm-google-off">Remove</button>' : ''}</div>
-      </form></div>`;
+      ${!u.isAdmin && u.expiresAt ? `<div class="section-title">${icon('ticket', 18)} Account validity</div>
+      <div class="card stack"><p style="margin:0">Your account is valid until <b>${esc(new Date(u.expiresAt).toLocaleDateString(undefined, { dateStyle: 'long' }))}</b>${u.expiresAt - Date.now() < 7 * 86400000 ? ' <span class="status warn">expires soon</span>' : ''}. Redeem a license key to extend it.</p>
+        <form class="row" id="f-license"><input name="key" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" required autocomplete="off" spellcheck="false"><button class="btn">${icon('ticket', 15)} Redeem</button></form></div>` : ''}
+      <div class="section-title">${icon('help', 18)} Help</div>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn" id="acct-tour">${icon('compass', 15)} Take the tour again</button>
+        <button class="btn" id="acct-keys">${icon('keyboard', 15)} Keyboard shortcuts</button>
+        ${u.isAdmin ? `<button class="btn" id="acct-admin">${icon('admin', 15)} Open admin console</button>` : ''}
+      </div>
+      <p class="muted small" style="margin:16px 0 0">${esc(S.config.appName)} v${esc(S.config.version || '')}</p>`;
   };
   const updateMe = (user) => {
     S.me = user;
@@ -2004,14 +2179,12 @@ function openAccount() {
       if (f.id === 'f-name') { updateMe((await put('/api/account', d)).user); toast('Name updated'); }
       if (f.id === 'f-pass') { updateMe((await post('/api/account/password', d)).user); toast('Password saved; other sessions were signed out'); }
       if (f.id === 'f-2fa-off') { updateMe((await post('/api/account/2fa/disable', d)).user); toast('Two-factor authentication disabled'); }
-      if (f.id === 'f-google') {
-        if (d.clientId.trim() && !d.clientSecret.trim() && !admin.google.hasSecret) throw new Error('Enter the client secret');
-        admin = await put('/api/admin/settings', { google: d });
-        S.config.google = admin.google.enabled;
-        renderAdmin();
-        toast(admin.google.enabled ? 'Google sign-in enabled' : 'Google settings saved');
-      }
-      if (f.id === 'f-2fa-on') {
+      if (f.id === 'f-license') {
+        const r = await post('/api/account/license', d);
+        updateMe(r.user);
+        scheduleExpiryCheck();
+        toast(`License redeemed: valid until ${new Date(r.user.expiresAt).toLocaleDateString()}`);
+      }      if (f.id === 'f-2fa-on') {
         const r = await post('/api/account/2fa/enable', d);
         S.me = r.user;
         renderMe();
@@ -2026,19 +2199,9 @@ function openAccount() {
     }
   });
   m.el.addEventListener('click', async (e) => {
-    if (e.target.closest('#adm-copy')) copyText($('#adm-redirect', m.el).value);
-    if (e.target.closest('#adm-google-off')) {
-      if (!(await confirmDialog('Remove Google sign-in? Users can no longer sign in with Google until it is configured again. Accounts with a password are not affected.', { okText: 'Remove', danger: true }))) return;
-      try {
-        admin = await put('/api/admin/settings', { google: null });
-        S.config.google = false;
-        renderAdmin();
-        toast('Google sign-in removed');
-      } catch (err) {
-        toast(err.message, 'error');
-      }
-    }
-    if (e.target.closest('#tfa-start')) {
+    if (e.target.closest('#acct-tour')) { m.close(); runTour(); return; }
+    if (e.target.closest('#acct-keys')) { openShortcuts(); return; }
+    if (e.target.closest('#acct-admin')) { m.close(); $('#btn-admin').click(); return; }    if (e.target.closest('#tfa-start')) {
       try {
         const r = await post('/api/account/2fa/setup');
         $('#tfa', m.el).innerHTML = `<div class="card stack">
@@ -2055,17 +2218,6 @@ function openAccount() {
     }
   });
   m.el.addEventListener('change', async (e) => {
-    if (e.target.id === 'adm-signup') {
-      try {
-        admin = await put('/api/admin/settings', { allowSignup: e.target.checked });
-        S.config.allowSignup = admin.allowSignup;
-        toast(admin.allowSignup ? 'Sign up enabled' : 'Sign up disabled');
-      } catch (err) {
-        e.target.checked = !e.target.checked;
-        toast(err.message, 'error');
-      }
-      return;
-    }
     if (e.target.id !== 'imp') return;
     const files = [...e.target.files];
     for (const f of files) {

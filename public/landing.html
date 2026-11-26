@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AllNote</title>
+  <meta name="description" content="Linked Markdown notes with live collaboration, publishing and enterprise-grade sign-in.">
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="/js/theme.js"></script>
+  <script type="module" src="/js/landing.js"></script>
+</head>
+<body class="landing">
+  <header class="ld-nav">
+    <a class="brand" href="/welcome"><img src="/favicon.svg" alt=""><span class="app-name">AllNote</span></a>
+    <nav class="ld-links">
+      <a href="#features">Features</a>
+      <a href="#security">Security</a>
+      <a href="#how">How it works</a>
+    </nav>
+    <span class="spacer"></span>
+    <button class="icon-btn" type="button" data-theme-toggle></button>
+    <a class="btn ghost" href="/login">Sign in</a>
+    <a class="btn primary ld-signup" href="/signup">Get started</a>
+  </header>
+
+  <main>
+    <section class="ld-hero">
+      <div class="ld-hero-text">
+        <span class="ld-pill"><i data-icon="shield" data-size="14"></i> Self-hosted and private</span>
+        <h1>Your knowledge, <br>linked and in one place.</h1>
+        <p class="ld-lead">Write in Markdown with live preview, connect ideas with links and a graph, collaborate in real time and publish pages to the web, all on your own server.</p>
+        <div class="ld-cta">
+          <a class="btn primary lg ld-signup" href="/signup">Create your account <i data-icon="arrowRight" data-size="16"></i></a>
+          <a class="btn lg" href="/login"><i data-icon="login" data-size="16"></i> Sign in</a>
+        </div>
+        <p class="ld-note muted hidden" id="ld-approval"><i data-icon="info" data-size="14"></i> New accounts are activated by an administrator.</p>
+      </div>
+      <div class="ld-mock" aria-hidden="true">
+        <div class="ld-mock-side">
+          <span class="ld-dot"></span><span class="ld-dot"></span><span class="ld-dot"></span>
+          <div class="ld-line w70"></div><div class="ld-line w50 on"></div><div class="ld-line w60"></div><div class="ld-line w40"></div><div class="ld-line w55"></div>
+        </div>
+        <div class="ld-mock-main">
+          <div class="ld-line h w60"></div>
+          <div class="ld-line w90"></div><div class="ld-line w80"></div><div class="ld-line w85"></div>
+          <div class="ld-mock-card"><i data-icon="graph" data-size="40"></i></div>
+          <div class="ld-line w75"></div><div class="ld-line w50"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ld-section" id="features">
+      <h2>Everything you need to think and share</h2>
+      <div class="ld-grid">
+        <article class="ld-card"><i data-icon="edit" data-size="24"></i><h3>Live Markdown editor</h3><p>Notes stay formatted while you type. Tables, checklists, callouts, code and highlights included.</p></article>
+        <article class="ld-card"><i data-icon="graph" data-size="24"></i><h3>Linked thinking</h3><p>Wiki links, backlinks, embeds, tags and an interactive graph show how your ideas connect.</p></article>
+        <article class="ld-card"><i data-icon="users" data-size="24"></i><h3>Real-time collaboration</h3><p>Share a note to view or edit. See who is there and merge edits made at the same time.</p></article>
+        <article class="ld-card"><i data-icon="globe" data-size="24"></i><h3>Publish to the web</h3><p>Turn any note into a public page with a custom link, optionally protected by a PIN.</p></article>
+        <article class="ld-card"><i data-icon="clock" data-size="24"></i><h3>Version history</h3><p>Every change is kept. Compare and restore earlier versions with one click.</p></article>
+        <article class="ld-card"><i data-icon="calendar" data-size="24"></i><h3>Daily notes and search</h3><p>Journal in a daily note and find anything with full-text search and filters.</p></article>
+      </div>
+    </section>
+
+    <section class="ld-section" id="security">
+      <h2>Secure by default</h2>
+      <div class="ld-grid">
+        <article class="ld-card"><i data-icon="shield" data-size="24"></i><h3>Two-factor authentication</h3><p>Protect every account with an authenticator app and one-time recovery codes.</p></article>
+        <article class="ld-card"><i data-icon="key" data-size="24"></i><h3>Google single sign-on</h3><p>Sign in with your Google account when your administrator enables it.</p></article>
+        <article class="ld-card"><i data-icon="admin" data-size="24"></i><h3>Administrator control</h3><p>Approve new users, set account expiration and issue license keys.</p></article>
+      </div>
+    </section>
+
+    <section class="ld-section" id="how">
+      <h2>How it works</h2>
+      <ol class="ld-steps">
+        <li><span>1</span><div><b>Create an account</b><p class="muted">Sign up with email or Google.</p></div></li>
+        <li><span>2</span><div><b>Get approved</b><p class="muted">An administrator activates your account.</p></div></li>
+        <li><span>3</span><div><b>Take the tour</b><p class="muted">A short guided tour shows you around.</p></div></li>
+        <li><span>4</span><div><b>Start writing</b><p class="muted">Write, link, share and publish your notes.</p></div></li>
+      </ol>
+      <div class="ld-cta center">
+        <a class="btn primary lg ld-signup" href="/signup">Get started <i data-icon="arrowRight" data-size="16"></i></a>
+        <a class="btn lg" href="/login">I already have an account</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="ld-foot">
+    <span><span class="app-name">AllNote</span> <span class="app-version"></span></span>
+    <span class="spacer"></span>
+    <a href="/login">Sign in</a>
+  </footer>
+</body>
+</html>

@@ -15,6 +15,8 @@ export function setSetting(key, value) {
   else qSet.run(key, String(value));
 }
 
+const flag = (key, fallback) => getSetting(key, String(fallback)) === 'true';
+
 export function googleSettings() {
   const clientId = getSetting('google_client_id');
   const clientSecret = getSetting('google_client_secret');
@@ -28,5 +30,10 @@ export const hasUsers = () => Boolean(db.prepare('SELECT 1 FROM users LIMIT 1').
 // The very first account can always be created (it becomes the admin).
 export function signupAllowed() {
   if (!hasUsers()) return true;
-  return getSetting('allow_signup', String(config.allowSignup)) === 'true';
+  return flag('allow_signup', config.allowSignup);
 }
+
+// New self-registered accounts wait for an administrator unless this is turned off.
+export const approvalRequired = () => flag('require_approval', true);
+
+export const landingEnabled = () => flag('landing_page', true);

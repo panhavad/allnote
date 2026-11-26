@@ -1,11 +1,11 @@
 import express from 'express';
 import { db, tx } from './db.js';
 import { newId, now, hashSecret } from './security.js';
-import { requireAuth } from './sessions.js';
+import { requireActive } from './sessions.js';
 import { subscribe, sendToUser } from './events.js';
 
 export const notesRouter = express.Router();
-notesRouter.use('/api/notes', requireAuth);
+notesRouter.use('/api/notes', requireActive);
 
 const NOTE_SELECT = `
   SELECT n.*, o.name AS owner_name, o.email AS owner_email, ub.name AS updated_by_name,
@@ -72,7 +72,7 @@ function loadNote(req, res, { write = false, owner = false } = {}) {
 
 const str = (v, max) => String(v ?? '').slice(0, max);
 
-notesRouter.get('/api/events', requireAuth, subscribe);
+notesRouter.get('/api/events', requireActive, subscribe);
 
 notesRouter.get('/api/notes', (req, res) => {
   res.json({ notes: qList.all({ uid: req.user.id }).map(serialize) });

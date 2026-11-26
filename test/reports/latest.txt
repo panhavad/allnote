@@ -1,0 +1,78 @@
+===== admin.test.js =====
+✔ fresh install: setup screen, first account becomes the approved admin (1399.6689ms)
+✔ new sign ups wait for approval: they can sign in but every feature is blocked (171.2934ms)
+✔ approval can be turned off; sign up can be closed (141.5574ms)
+✔ expiration: expired users can sign in but are locked until renewed (430.5574ms)
+✔ license keys: generate, redeem once, extend, revoke (553.9479ms)
+✔ admin user management: add, reset password, reset 2FA, remove (1489.7385ms)
+✔ tour flag, landing page toggle, version and cache headers (298.5226ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4738.9773
+
+===== api.test.js =====
+✔ server TOTP matches the RFC 6238 SHA-1 test vector (1664.2856ms)
+✔ auth, two-factor login and recovery codes (2601.1256ms)
+✔ notes: optimistic versioning, sharing roles and history (260.1513ms)
+✔ publishing with PIN protection (951.1428ms)
+✔ Google SSO is configured by the admin in the UI and the secret never leaves the server (132.3914ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5971.7897
+
+===== migration.test.js =====
+✔ v1.0 database upgrades without losing accounts, sessions or notes (1627.402ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2105.4992
+
+===== security.test.js =====
+✔ admin API: anonymous gets 401, normal users get 403 on every endpoint (1354.9493ms)
+✔ users cannot make themselves admin or approve themselves through account endpoints (77.5716ms)
+✔ admins cannot lock out, expire or delete themselves or other admins (14.9201ms)
+✔ locked accounts are blocked from every feature endpoint, including the live event stream (191.6045ms)
+✔ an open event stream stops delivering notes once the account expires (2112.3403ms)
+✔ brute force limits: license keys and passwords (762.0309ms)
+✔ CSRF: cross-origin state-changing requests are rejected, including admin actions (8.2312ms)
+✔ security headers and cookie flags (82.9468ms)
+✔ secrets: Google client secret, password hashes and TOTP secrets are never exposed (23.4885ms)
+✔ input validation and injection attempts are rejected cleanly (84.4782ms)
+✔ path traversal and unknown routes do not leak files (12.9611ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4967.2365
+
+===== ui.test.js =====
+✔ no emoji anywhere in the front-end (2.1867ms)
+✔ every icon used in the UI exists in the icon set (5.8764ms)
+✔ every page supports light and dark mode and shows the version (6.3537ms)
+✔ form inputs get icons automatically, except the editor surfaces (4.7137ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 157.512
+

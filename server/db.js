@@ -77,14 +77,33 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS licenses (
+  key TEXT PRIMARY KEY,
+  days INTEGER NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  redeemed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  redeemed_email TEXT,
+  redeemed_at INTEGER,
+  revoked INTEGER NOT NULL DEFAULT 0
+);
 `);
 
-if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'is_admin')) {
-  db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
-}
+// Backward-compatible migrations: only ever ADD columns, with defaults that keep existing accounts working.
+const userCols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
+const addUserCol = (name, def) => {
+  if (!userCols.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${def}`);
+};
+addUserCol('is_admin', 'INTEGER NOT NULL DEFAULT 0');
+addUserCol('approved', 'INTEGER NOT NULL DEFAULT 1'); // accounts that existed before approvals stay approved
+addUserCol('expires_at', 'INTEGER'); // NULL = never expires
+addUserCol('tour_done', 'INTEGER NOT NULL DEFAULT 1'); // existing users skip the onboarding tour; new users get 0
+
 // Existing installs without an admin: the earliest account becomes the admin.
 if (!db.prepare('SELECT 1 FROM users WHERE is_admin = 1').get()) {
-  db.prepare('UPDATE users SET is_admin = 1 WHERE id = (SELECT id FROM users ORDER BY created_at, rowid LIMIT 1)').run();
+  db.prepare('UPDATE users SET is_admin = 1, approved = 1 WHERE id = (SELECT id FROM users ORDER BY created_at, rowid LIMIT 1)').run();
 }
 
 export function tx(fn) {

@@ -1,17 +1,17 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { db } from './db.js';
 import { sessionMiddleware } from './sessions.js';
 import { authRouter } from './auth.js';
+import { adminRouter } from './admin.js';
 import { notesRouter } from './notes.js';
 import { publicRouter } from './public.js';
-import { googleSettings } from './settings.js';
+import { googleSettings, landingEnabled, hasUsers } from './settings.js';
+import { PUBLIC_DIR, BUILD_ID } from './build.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const __dirname = path.dirname(PUBLIC_DIR);
 
 const app = express();
 app.disable('x-powered-by');
@@ -59,7 +59,7 @@ app.get('/healthz', (_req, res) => {
 });
 
 // Client-side libraries served from node_modules (no CDN, works offline / behind firewalls).
-const NODE_MODULES = path.join(__dirname, '..', 'node_modules');
+const NODE_MODULES = path.join(__dirname, 'node_modules');
 const vendor = {
   'marked.js': () => fs.readFileSync(path.join(NODE_MODULES, 'marked', 'lib', 'marked.esm.js'), 'utf8'),
   'purify.js': () => fs.readFileSync(path.join(NODE_MODULES, 'dompurify', 'dist', 'purify.es.mjs'), 'utf8'),
@@ -75,15 +75,29 @@ app.get('/vendor/:file', (req, res, next) => {
 });
 
 app.use(authRouter);
+app.use(adminRouter);
 app.use(notesRouter);
 app.use(publicRouter);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
-// no-cache + ETag: browsers revalidate (cheap 304s) so auto-deployed updates show up immediately.
+// HTML is never cached and carries the build id; assets are revalidated (no-cache + ETag), so a deploy
+// is picked up on the next load and open tabs reload themselves when /api/config reports a new build.
+const sendPage = (file) => (_req, res) => {
+  res.set({ 'Cache-Control': 'no-store', 'X-App-Build': BUILD_ID });
+  res.sendFile(path.join(PUBLIC_DIR, file));
+};
+app.get('/', (req, res, next) => {
+  const anonymous = !req.user && !req.pendingUser;
+  // A fresh install goes straight to "create the admin account".
+  if (anonymous && landingEnabled() && hasUsers()) return sendPage('landing.html')(req, res, next);
+  sendPage('index.html')(req, res, next);
+});
+app.get('/welcome', sendPage('landing.html'));
+app.get(['/index.html', '/landing.html', '/publish.html'], (req, res) => res.redirect(301, '/'));
 app.use(express.static(PUBLIC_DIR, { index: false, cacheControl: true, maxAge: 0, setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
-app.get('/p/:slug', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'publish.html')));
-app.get('/{*splat}', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+app.get('/p/:slug', sendPage('publish.html'));
+app.get('/{*splat}', sendPage('index.html'));
 
 app.use((err, _req, res, _next) => {
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Note is too large' });
@@ -92,7 +106,8 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(config.port, () => {
-  console.log(`${config.appName} listening on :${config.port} (public URL ${config.publicUrl || 'derived from requests'})`);
-  console.log(`Google SSO: ${googleSettings().enabled ? 'enabled' : 'disabled (admin can configure it in Settings > Administration)'}`);
+const server = app.listen(config.port, () => {
+  const { port } = server.address();
+  console.log(`${config.appName} v${config.version} (build ${BUILD_ID}) listening on :${port} (public URL ${config.publicUrl || 'derived from requests'})`);
+  console.log(`Google SSO: ${googleSettings().enabled ? 'enabled' : 'disabled (an admin can configure it in the admin console, Sign-in tab)'}`);
 });

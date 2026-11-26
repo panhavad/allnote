@@ -16,6 +16,9 @@ export async function api(method, url, body, { timeoutMs = 20_000 } = {}) {
   } catch {
     /* empty body */
   }
+  if (res.status === 403 && String(data?.code || '').startsWith('account_')) {
+    window.dispatchEvent(new CustomEvent('allnote:account'));
+  }
   if (!res.ok) {
     const err = new Error(data?.error || `Request failed (${res.status})`);
     err.status = res.status;
