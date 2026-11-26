@@ -20,6 +20,7 @@ const SUITES = {
   'security.test.js': 'Security (access control, locked accounts, brute force, CSRF, headers, secrets, validation)',
   'migration.test.js': 'Backward compatibility (v1.0 database upgrade)',
   'ui.test.js': 'UI guarantees (no emoji, icons, light/dark mode, version display)',
+  'editor.test.js': 'WYSIWYG editor (Markdown round trip, rendering without syntax)',
 };
 
 const sh = (cmd) => {

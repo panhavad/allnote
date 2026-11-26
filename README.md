@@ -21,7 +21,7 @@ Current version: **1.1.0** (shown on the landing page, the sign-in page and insi
 
 | Area | What you get |
 | --- | --- |
-| Writing | **Live preview** (notes stay formatted; click any paragraph, list or table to edit it in place), plus source, split and reading modes, toolbar and shortcuts, list auto-continue, checklists you can tick in the preview, tables, code, `==highlight==`, callouts (`> [!tip]`) |
+| Writing | **WYSIWYG live preview**: one continuous document that looks exactly like the final note while you edit it (no Markdown symbols, no block-by-block raw text). Markdown shortcuts format as you type (`# `, `- `, `1. `, `[ ] `, `> `, `**bold**`, `==highlight==`, `---`, ```` ``` ````), `[[` autocomplete inserts note links, checkboxes, tables, callouts with a type picker, embeds and code blocks are edited in place. Source, split and reading modes are still available, and notes are stored as plain Markdown |
 | Linking | `[[Note]]`, `[[Note\|alias]]`, `[[Note#Heading]]`, `![[Note]]` embeds, `[[` autocomplete, click a missing link to create the note, backlinks, outgoing links, outline, interactive graph view |
 | Organising | Nested folders (`Work/Projects`), **drag and drop** in the sidebar (reorder notes, move notes and folders in and out of folders, reorder folders, drop on Pinned or Trash; mouse or press-and-hold on touch), `#tags` (nested `#work/alpha`), pinned notes, trash and restore, daily notes, quick switcher (`Ctrl+K`), full-text search with `tag:` and `notebook:` filters |
 | Collaboration | Share a note by email as *Can edit* / *Can view*, live updates over Server-Sent Events, presence avatars, automatic 3-way merge of concurrent edits, version history with restore |
@@ -214,6 +214,16 @@ flowchart LR
 ### Editing, sync and conflict merge
 
 ```mermaid
+flowchart LR
+  A["You type in the WYSIWYG editor<br/>(src/editor, Tiptap / ProseMirror)"] --> B["Editor serialises to Markdown<br/>(tiptap-markdown + custom rules for [[links]], ![[embeds]], callouts, ==highlight==)"]
+  B --> C["el.text = Markdown (single source of truth)"]
+  C --> D["Autosave PUT /api/notes/:id with baseVersion"]
+  E["Source / split mode textarea"] --> C
+  F["Remote change over SSE"] --> G["3-way merge on Markdown"] --> C
+  G --> H["Editor content replaced in place, cursor kept"]
+```
+
+```mermaid
 sequenceDiagram
   participant A as Editor (tab A)
   participant S as Server
@@ -303,6 +313,7 @@ npm install
 npm run dev           # http://localhost:3000 (auto-restarts on server changes)
 npm test              # all test suites
 npm run test:report   # tests + dependency audit, saves test/reports/latest.md and updates this README
+npm run build:editor  # rebuild public/vendor/editor.js after changing src/editor (the bundle is committed)
 ```
 
 Data is stored in `./data` by default (`DATA_DIR`). Outside Docker the app listens on port 3000 unless `PORT` is set.
@@ -413,20 +424,22 @@ Run `npm run test:report` whenever a feature is added or removed. It writes:
 | Security | `test/security.test.js` | Every admin endpoint requires an admin, privilege escalation attempts, admin self-lockout protection, locked accounts blocked from every feature and the event stream, brute-force limits (login, license keys), CSRF, security headers and cookie flags, no secret leakage, input validation and injection, path traversal |
 | Backward compatibility | `test/migration.test.js` | A v1.0 database upgrades in place: accounts, passwords, sessions and notes are kept, the oldest user becomes admin, existing users stay approved |
 | UI guarantees | `test/ui.test.js` | No emoji in the front-end, every referenced icon exists, light and dark mode on every page, version on the sign-in page, the app and the landing page, automatic field icons |
+| WYSIWYG editor | `test/editor.test.js` | Markdown round trip through the editor (headings, emphasis, highlight, line breaks, wiki links, embeds, tags, lists, tasks incl. empty ones, callouts, tables, code, links, images, inline HTML), wiki links and callouts render without Markdown syntax |
 
 ### Test summary
 
 <!-- test-summary:start -->
-**Last run:** 2026-11-26 17:02 UTC, version 1.1.0: **PASSED**, 29/29 tests passed. Dependency audit: no known vulnerabilities in production dependencies.
+**Last run:** 2026-11-26 17:27 UTC, version 1.1.0: **PASSED**, 58/58 tests passed. Dependency audit: no known vulnerabilities in production dependencies.
 
 | Suite | Tests | Passed | Failed | Time |
 | --- | ---: | ---: | ---: | ---: |
-| Administration, approval, expiration, licenses, landing page, tour, versioning | 7 | 7 | 0 | 2.9 s |
-| Core features (auth, 2FA, notes, sharing, publishing, Google SSO) | 6 | 6 | 0 | 4.5 s |
-| Backward compatibility (v1.0 database upgrade) | 1 | 1 | 0 | 1.9 s |
-| Security (access control, locked accounts, brute force, CSRF, headers, secrets, validation) | 11 | 11 | 0 | 5.1 s |
+| Administration, approval, expiration, licenses, landing page, tour, versioning | 7 | 7 | 0 | 3.5 s |
+| Core features (auth, 2FA, notes, sharing, publishing, Google SSO) | 6 | 6 | 0 | 4.8 s |
+| WYSIWYG editor (Markdown round trip, rendering without syntax) | 29 | 29 | 0 | 4.1 s |
+| Backward compatibility (v1.0 database upgrade) | 1 | 1 | 0 | 1.6 s |
+| Security (access control, locked accounts, brute force, CSRF, headers, secrets, validation) | 11 | 11 | 0 | 4.9 s |
 | UI guarantees (no emoji, icons, light/dark mode, version display) | 4 | 4 | 0 | 0.2 s |
-| **Total** | **29** | **29** | **0** | |
+| **Total** | **58** | **58** | **0** | |
 
 Full report: [test/reports/latest.md](test/reports/latest.md)
 <!-- test-summary:end -->
@@ -440,7 +453,10 @@ Full report: [test/reports/latest.md](test/reports/latest.md)
 | `Ctrl/Cmd + E` | Toggle live preview / reading view |
 | `Ctrl/Cmd + S` | Save now |
 | `Ctrl/Cmd + B` / `I` | Bold / italic |
+| `Ctrl/Cmd + Shift + H` | Highlight (live preview) |
 | `Ctrl/Cmd + Enter` | Toggle checklist on line |
+| `Ctrl/Cmd + Z` / `Ctrl/Cmd + Shift + Z` | Undo / redo |
+| `Ctrl/Cmd + click` | Open a web link or show all notes with a tag (live preview) |
 | `Tab` / `Shift+Tab` | Indent / outdent |
 | `[[` | Link autocomplete |
 | `Esc` while dragging | Cancel the drag |
@@ -476,9 +492,12 @@ public/
   js/tour.js      Onboarding tour
   js/common.js    Theme toggle, field icons, version, update detection
   js/markdown.js  Markdown, wiki links, embeds, tags, callouts (marked + DOMPurify)
+  vendor/editor.js Built WYSIWYG editor bundle (from src/editor, committed)
   js/merge.js     3-way merge (diff-match-patch)
   js/graph.js     Force-directed graph on canvas
 scripts/
   test-report.js  Runs tests + npm audit and saves the report
+  build-editor.js Bundles src/editor into public/vendor/editor.js (esbuild)
+src/editor/       WYSIWYG editor source (Tiptap + Markdown rules for the app's syntax)
 test/             node:test suites and reports
 ```

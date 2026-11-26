@@ -1,11 +1,11 @@
 ===== admin.test.js =====
-✔ fresh install: setup screen, first account becomes the approved admin (1039.007ms)
-✔ new sign ups wait for approval: they can sign in but every feature is blocked (102.4321ms)
-✔ approval can be turned off; sign up can be closed (92.053ms)
-✔ expiration: expired users can sign in but are locked until renewed (217.9876ms)
-✔ license keys: generate, redeem once, extend, revoke (282.4487ms)
-✔ admin user management: add, reset password, reset 2FA, remove (850.919ms)
-✔ tour flag, landing page toggle, version and cache headers (156.0433ms)
+✔ fresh install: setup screen, first account becomes the approved admin (975.4087ms)
+✔ new sign ups wait for approval: they can sign in but every feature is blocked (102.3138ms)
+✔ approval can be turned off; sign up can be closed (90.1108ms)
+✔ expiration: expired users can sign in but are locked until renewed (262.8124ms)
+✔ license keys: generate, redeem once, extend, revoke (460.5597ms)
+✔ admin user management: add, reset password, reset 2FA, remove (1171.0357ms)
+✔ tour flag, landing page toggle, version and cache headers (223.816ms)
 ℹ tests 7
 ℹ suites 0
 ℹ pass 7
@@ -13,15 +13,15 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 2930.3268
+ℹ duration_ms 3475.8679
 
 ===== api.test.js =====
-✔ server TOTP matches the RFC 6238 SHA-1 test vector (964.2143ms)
-✔ auth, two-factor login and recovery codes (1718.373ms)
-✔ notes: optimistic versioning, sharing roles and history (182.7689ms)
-✔ publishing with PIN protection (987.5092ms)
-✔ drag and drop: reorder notes, move them in and out of folders, move folders (343.8579ms)
-✔ Google SSO is configured by the admin in the UI and the secret never leaves the server (141.7704ms)
+✔ server TOTP matches the RFC 6238 SHA-1 test vector (1170.2347ms)
+✔ auth, two-factor login and recovery codes (2075.7391ms)
+✔ notes: optimistic versioning, sharing roles and history (206.8845ms)
+✔ publishing with PIN protection (808.8892ms)
+✔ drag and drop: reorder notes, move them in and out of folders, move folders (227.2719ms)
+✔ Google SSO is configured by the admin in the UI and the secret never leaves the server (110.2053ms)
 ℹ tests 6
 ℹ suites 0
 ℹ pass 6
@@ -29,10 +29,49 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 4545.7843
+ℹ duration_ms 4788.4751
+
+===== editor.test.js =====
+✔ loading or clicking into a note never reports a change (162.3971ms)
+✔ Ctrl/Cmd+E is left to the app (no inline-code shortcut) (18.8009ms)
+✔ round trip: headings and paragraphs (26.9345ms)
+✔ round trip: bold, italic, strike, code, highlight (26.6234ms)
+✔ round trip: single-newline line breaks (18.9158ms)
+✔ round trip: wiki links with heading and alias (22.5992ms)
+✔ round trip: embeds (27.3651ms)
+✔ round trip: tags (29.6634ms)
+✔ round trip: bullet, numbered and nested lists (35.9339ms)
+✔ round trip: task lists (110.0817ms)
+✔ round trip: callout with title and body (57.3045ms)
+✔ round trip: callout without title (54.4487ms)
+✔ round trip: blockquote (86.0065ms)
+✔ round trip: tables (107.3346ms)
+✔ round trip: code blocks (56.7761ms)
+✔ round trip: links and images (70.1513ms)
+✔ round trip: horizontal rule (43.1476ms)
+✔ round trip: inline html stays as typed (39.1539ms)
+✔ round trip: nested task lists (47.2547ms)
+✔ round trip: numbered list starting at 3 (39.5975ms)
+✔ round trip: list inside a callout (31.8274ms)
+✔ round trip: heading with a tag and a link (29.9932ms)
+✔ round trip: mixed real note (53.4676ms)
+✔ round trip: pipe inside a table cell (37.1852ms)
+✔ round trip: list marker after a line break stays text (29.3664ms)
+✔ round trip: heading marker after a line break stays text (20.6367ms)
+✔ daily note template survives editing (34.9722ms)
+✔ the editor shows wiki links as links, not as [[ ]] text (32.8755ms)
+✔ callouts render as one block with an editable title (28.5827ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4107.1924
 
 ===== migration.test.js =====
-✔ v1.0 database upgrades without losing accounts, sessions or notes (1441.5739ms)
+✔ v1.0 database upgrades without losing accounts, sessions or notes (1193.2069ms)
 ℹ tests 1
 ℹ suites 0
 ℹ pass 1
@@ -40,20 +79,20 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 1894.8371
+ℹ duration_ms 1589.2639
 
 ===== security.test.js =====
-✔ admin API: anonymous gets 401, normal users get 403 on every endpoint (1423.9485ms)
-✔ users cannot make themselves admin or approve themselves through account endpoints (97.3785ms)
-✔ admins cannot lock out, expire or delete themselves or other admins (24.2679ms)
-✔ locked accounts are blocked from every feature endpoint, including the live event stream (197.7628ms)
-✔ an open event stream stops delivering notes once the account expires (2125.1377ms)
-✔ brute force limits: license keys and passwords (806.9839ms)
-✔ CSRF: cross-origin state-changing requests are rejected, including admin actions (7.8086ms)
-✔ security headers and cookie flags (80.1477ms)
-✔ secrets: Google client secret, password hashes and TOTP secrets are never exposed (17.1276ms)
-✔ input validation and injection attempts are rejected cleanly (90.858ms)
-✔ path traversal and unknown routes do not leak files (16.884ms)
+✔ admin API: anonymous gets 401, normal users get 403 on every endpoint (1250.3975ms)
+✔ users cannot make themselves admin or approve themselves through account endpoints (75.8976ms)
+✔ admins cannot lock out, expire or delete themselves or other admins (18.5325ms)
+✔ locked accounts are blocked from every feature endpoint, including the live event stream (182.7594ms)
+✔ an open event stream stops delivering notes once the account expires (2133.8247ms)
+✔ brute force limits: license keys and passwords (689.4892ms)
+✔ CSRF: cross-origin state-changing requests are rejected, including admin actions (7.5406ms)
+✔ security headers and cookie flags (76.2525ms)
+✔ secrets: Google client secret, password hashes and TOTP secrets are never exposed (16.7499ms)
+✔ input validation and injection attempts are rejected cleanly (86.5804ms)
+✔ path traversal and unknown routes do not leak files (14.2008ms)
 ℹ tests 11
 ℹ suites 0
 ℹ pass 11
@@ -61,13 +100,13 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 5110.7237
+ℹ duration_ms 4854.9232
 
 ===== ui.test.js =====
-✔ no emoji anywhere in the front-end (2.389ms)
-✔ every icon used in the UI exists in the icon set (8.1642ms)
-✔ every page supports light and dark mode and shows the version (9.6203ms)
-✔ form inputs get icons automatically, except the editor surfaces (6.6317ms)
+✔ no emoji anywhere in the front-end (5.3565ms)
+✔ every icon used in the UI exists in the icon set (7.366ms)
+✔ every page supports light and dark mode and shows the version (9.6401ms)
+✔ form inputs get icons automatically, except the editor surfaces (6.0826ms)
 ℹ tests 4
 ℹ suites 0
 ℹ pass 4
@@ -75,5 +114,5 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 196.8573
+ℹ duration_ms 167.9903
 

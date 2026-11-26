@@ -1,7 +1,7 @@
 import { get, post, put, del, clientId } from './api.js';
 import { hydrateIcons, icon } from './icons.js';
 import {
-  renderInto, extractTags, extractLinks, extractHeadings, plainText, wordCount, toggleTask, splitBlocks, escapeHtml as esc,
+  renderInto, extractTags, extractLinks, extractHeadings, plainText, wordCount, toggleTask, escapeHtml as esc,
 } from './markdown.js';
 import { merge3, mapOffset } from './merge.js';
 import { createGraph } from './graph.js';
@@ -14,6 +14,7 @@ import {
 import { startTour } from './tour.js';
 import { openAdmin } from './admin.js';
 import { enableTreeDrag } from './treedrag.js';
+import { createEditor } from '/vendor/editor.js';
 
 // ============================================================ state
 const S = {
@@ -470,6 +471,7 @@ function renderAll() {
   renderPanel();
   renderTabs();
   renderInfo();
+  refreshEditorLinks();
 }
 
 const SORTS = {
@@ -666,7 +668,6 @@ const canEdit = (n) => n && n.role !== 'viewer' && !n.trashed;
 async function openNote(id, { focus } = {}) {
   if (!S.notes.has(id)) return;
   if (S.currentId !== id) {
-    if (live.active) liveDeactivate();
     await flushSave();
     if (S.currentId) sendPresence(S.currentId, 'left');
     const n = S.notes.get(id);
@@ -693,7 +694,7 @@ async function openNote(id, { focus } = {}) {
     el.app.classList.add('has-note');
     history.replaceState(null, '', `#/note/${id}`);
     applyRoleUI();
-    renderLive(true);
+    syncEditor(true);
     renderPreview();
     renderPresence();
     setSaveStatus('saved');
@@ -706,7 +707,7 @@ async function openNote(id, { focus } = {}) {
   if (focus === 'title' && canEdit(n)) el.title.focus();
   else if (focus === 'text' && canEdit(n)) {
     if (S.mode === 'preview') setMode('live');
-    if (S.mode === 'live') return liveActivateEnd();
+    if (S.mode === 'live') return wys.focus('end');
     el.text.focus();
     el.text.setSelectionRange(el.text.value.length, el.text.value.length);
   }
@@ -742,6 +743,7 @@ function applyRoleUI() {
   const owner = n.role === 'owner';
   el.text.readOnly = !editable;
   el.title.readOnly = !editable;
+  wys.setEditable(editable);
   el.notebook.disabled = !owner || n.trashed;
   el.notebook.value = owner ? n.notebook : `Shared by ${n.owner.name}`;
   $('#toolbar').classList.toggle('hidden', !editable || effectiveMode(n) === 'preview');
@@ -784,19 +786,15 @@ function schedulePreview() {
 function renderPreview() {
   const n = S.notes.get(S.currentId);
   if (!n || effectiveMode(n) === 'edit') return;
-  if (effectiveMode(n) === 'live') {
-    renderLive();
-    return;
-  }
+  if (effectiveMode(n) === 'live') return; // the editor itself is the rendered note
   renderInto(el.preview, el.text.value, { resolve: resolveTitle, interactiveTasks: canEdit(n) });
 }
 
 function setMode(mode) {
-  if (live.active) liveDeactivate();
   S.mode = mode;
   localStorage.setItem('allnote-mode', mode);
   applyRoleUI();
-  renderLive(true);
+  syncEditor();
   renderPreview();
 }
 
@@ -909,14 +907,6 @@ function applyRemote(note) {
   const myTitle = el.title.value;
   const merged = s.dirty ? merge3(s.base, mine, note.content) : note.content;
   const title = s.dirty && myTitle !== s.baseTitle ? myTitle : note.title;
-  let liveSel = null;
-  if (merged !== mine && live.active) {
-    const cs = live.start + live.ta.selectionStart;
-    const ce = live.start + live.ta.selectionEnd;
-    liveSel = [mapOffset(mine, merged, cs), mapOffset(mine, merged, ce)];
-    live.start = mapOffset(mine, merged, live.start);
-    live.end = Math.max(live.start, mapOffset(mine, merged, live.end));
-  }
   if (merged !== mine) {
     const focused = document.activeElement === el.text;
     const a = mapOffset(mine, merged, el.text.selectionStart);
@@ -925,11 +915,9 @@ function applyRemote(note) {
     el.text.value = merged;
     if (focused) el.text.setSelectionRange(a, b);
     el.text.scrollTop = scroll;
-    if (liveSel) {
-      live.ta.value = merged.slice(live.start, live.end);
-      const clamp = (x) => Math.max(0, Math.min(x - live.start, live.ta.value.length));
-      live.ta.setSelectionRange(clamp(liveSel[0]), clamp(liveSel[1]));
-      liveAutosize();
+    if (inWys()) {
+      wys.replace(merged);
+      wysLoaded(merged);
     }
   }
   if (title !== myTitle) el.title.value = title;
@@ -968,11 +956,8 @@ el.title.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
     if (S.mode === 'preview') setMode('live');
-    if (S.mode === 'live') {
-      const first = splitBlocks(el.text.value)[0];
-      if (first) liveActivate(first.start, first.end, 0);
-      else liveActivateEnd();
-    } else el.text.focus();
+    if (S.mode === 'live') wys.focus('start');
+    else el.text.focus();
   }
 });
 $('#ed-notebook').addEventListener('change', (e) => updateMeta({ notebook: e.target.value.trim().replace(/^\/+|\/+$/g, '') }));
@@ -996,6 +981,23 @@ $('#btn-more').addEventListener('click', (e) => openMoreMenu(e.currentTarget));
 
 // preview interactions: wikilinks, tags, tasks
 document.addEventListener('click', (e) => {
+  // Inside the editor, tags and web links are text you edit; Ctrl/Cmd+click follows them.
+  if (e.target.closest('#ed-live .ProseMirror') && !e.target.closest('.embed-block')) {
+    const mod = e.ctrlKey || e.metaKey;
+    const tagEl = e.target.closest('.tag[data-tag]');
+    if (tagEl && mod) {
+      e.preventDefault();
+      searchFor(`tag:${tagEl.dataset.tag.toLowerCase()}`);
+      return;
+    }
+    const link = e.target.closest('a[href]:not(.wikilink)');
+    if (link) {
+      e.preventDefault();
+      if (mod) window.open(link.href, '_blank', 'noopener');
+      return;
+    }
+    if (tagEl) return;
+  }
   const wl = e.target.closest('.markdown a.wikilink, a.link-card[data-open]');
   if (wl) {
     e.preventDefault();
@@ -1031,250 +1033,73 @@ async function openByTitle(title, heading) {
   }
 }
 
-// ---------------------------------------------------- live preview
-// Shows the note rendered; clicking a block swaps just that block for an editable textarea.
-// el.text stays the single source of truth; the block editor writes its slice back into it.
-const live = {
-  root: $('#ed-live'),
-  before: $('#ed-live .lp-before'),
-  after: $('#ed-live .lp-after'),
-  ta: $('#ed-live .lp-editor'),
-  active: false,
-  start: 0,
-  end: 0,
-  cache: '',
-};
-el.live = live.root;
-const ed = () => (live.active ? live.ta : el.text);
+// ---------------------------------------------------- live preview (WYSIWYG)
+// One continuous editable document that looks exactly like the rendered note. el.text stays the single
+// source of truth (Markdown); the editor writes its Markdown back on every change.
+el.live = $('#ed-live');
+// The editor writes Markdown in its own canonical style. To never rewrite a note the user did not edit,
+// remember the original text and its normalised form: an editor state equal to `norm` means "unchanged".
+const wysSync = { base: null, norm: null, last: null };
+function wysLoaded(md) {
+  wysSync.base = md;
+  wysSync.norm = wys.getMarkdown();
+  wysSync.last = md;
+}
+const wys = createEditor(el.live, {
+  resolve: (t) => resolveTitle(t),
+  renderEmbed: ({ target }) => {
+    const d = document.createElement('div');
+    renderInto(d, `![[${target}]]`, { resolve: resolveTitle, interactiveTasks: false });
+    return d;
+  },
+  placeholder: 'Start writing. Type # for a heading, - for a list, [[ to link a note',
+  onChange: () => {
+    const md = wys.getMarkdown();
+    const next = md === wysSync.norm ? wysSync.base : md;
+    wysSync.last = next;
+    if (next !== el.text.value) {
+      el.text.value = next;
+      markDirty();
+    }
+    updateSuggest();
+  },
+  onSelection: () => updateSuggest(),
+  onKeyDown: (e) => suggestKey(e),
+  onBlur: () => setTimeout(hideSuggest, 150),
+});
+const ed = () => el.text;
+const inWys = () => S.currentId && effectiveMode(S.notes.get(S.currentId)) === 'live';
 const viewEl = () => (effectiveMode(S.notes.get(S.currentId)) === 'live' ? el.live : el.preview);
 
-function fillBlocks(container, src, part) {
-  container.textContent = '';
+/** Make sure the editor shows the current Markdown (after opening a note, switching mode, restoring a version). */
+function syncEditor(force = false) {
   const n = S.notes.get(S.currentId);
-  const opts = { resolve: resolveTitle, interactiveTasks: canEdit(n) };
-  for (const b of splitBlocks(src)) {
-    const d = document.createElement('div');
-    d.className = 'lp-block';
-    d.dataset.part = part;
-    d.dataset.s = b.start;
-    d.dataset.e = b.end;
-    renderInto(d, src.slice(b.start, b.end), opts);
-    container.append(d);
+  if (!n) return;
+  wys.setEditable(canEdit(n));
+  if (effectiveMode(n) !== 'live') return;
+  if (force || wysSync.last !== el.text.value) {
+    wys.load(el.text.value);
+    wysLoaded(el.text.value);
   }
 }
 
-function renderLive(force = false) {
-  const src = el.text.value;
-  const head = live.active ? src.slice(0, live.start) : src;
-  const tail = live.active ? src.slice(live.end) : '';
-  const key = `${live.active}\u0000${head}\u0000${tail}\u0000${S.notes.size}`;
-  if (!force && key === live.cache) return;
-  live.cache = key;
-  fillBlocks(live.before, head, 'before');
-  fillBlocks(live.after, tail, 'after');
-  live.root.classList.toggle('is-empty', !live.active && !src.trim());
-  live.root.classList.toggle('readonly', !canEdit(S.notes.get(S.currentId)));
+// Re-render wiki link states and embeds when other notes change (created, renamed, edited).
+let wysOthersKey = '';
+function refreshEditorLinks() {
+  if (!inWys()) return;
+  const key = [...S.notes.values()].filter((x) => x.id !== S.currentId).map((x) => `${x.id}:${x.version}:${x.title}:${x.trashed}`).join('|');
+  if (key === wysOthersKey) return;
+  wysOthersKey = key;
+  wys.refresh();
 }
 
-function liveAutosize() {
-  live.ta.style.height = 'auto';
-  live.ta.style.height = `${live.ta.scrollHeight}px`;
-}
-
-function liveActivate(start, end, caret) {
-  if (!canEdit(S.notes.get(S.currentId))) return;
-  live.active = true;
-  live.start = start;
-  live.end = end;
-  live.ta.hidden = false;
-  live.ta.value = el.text.value.slice(start, end);
-  renderLive(true);
-  liveAutosize();
-  live.ta.focus({ preventScroll: true });
-  const c = Math.max(0, Math.min(caret ?? live.ta.value.length, live.ta.value.length));
-  live.ta.setSelectionRange(c, c);
-  const r = live.ta.getBoundingClientRect();
-  if (r.top < 80 || r.bottom > window.innerHeight - 40) live.ta.scrollIntoView({ block: 'nearest' });
-}
-
-// Returns [oldSource, newSource]; an emptied block is removed together with its surrounding blank lines.
-function liveDeactivate() {
-  const src = el.text.value;
-  if (!live.active) return [src, src];
-  let next = src;
-  if (!live.ta.value.trim()) {
-    const head = src.slice(0, live.start).replace(/\n+$/, '');
-    const tail = src.slice(live.end).replace(/^\n+/, '');
-    next = head && tail ? `${head}\n\n${tail}` : head || tail;
-  }
-  live.active = false;
-  live.ta.hidden = true;
-  hideSuggest();
-  if (next !== src) {
-    el.text.value = next;
-    markDirty();
-  }
-  renderLive(true);
-  return [src, next];
-}
-
-function liveActivateEnd() {
-  if (live.active) liveDeactivate();
-  const trimmed = el.text.value.replace(/\s+$/, '');
-  const src = trimmed ? `${trimmed}\n\n` : '';
-  if (src !== el.text.value) el.text.value = src;
-  liveActivate(src.length, src.length, 0);
-}
-
-function liveRangeOf(blk) {
-  const base = blk.dataset.part === 'after' ? live.end : 0;
-  return [base + Number(blk.dataset.s), base + Number(blk.dataset.e)];
-}
-
-function liveGo(start, end, caret) {
-  if (live.active) {
-    const [o, n] = liveDeactivate();
-    if (o !== n) {
-      start = mapOffset(o, n, start);
-      end = mapOffset(o, n, end);
-    }
-  }
-  liveActivate(start, end, caret === 'end' ? end - start : caret);
-}
-
-function liveNeighbor(dir) {
-  const blocks = splitBlocks(el.text.value);
-  return dir < 0 ? blocks.filter((b) => b.end <= live.start).pop() : blocks.find((b) => b.start >= live.end);
-}
-
-// Map a click inside rendered HTML to an offset in the block's markdown (subsequence match of the visible text).
-function caretFromPoint(blk, x, y, raw) {
-  let range = null;
-  if (document.caretPositionFromPoint) {
-    const p = document.caretPositionFromPoint(x, y);
-    if (p) {
-      range = document.createRange();
-      range.setStart(p.offsetNode, p.offset);
-    }
-  } else if (document.caretRangeFromPoint) range = document.caretRangeFromPoint(x, y);
-  if (!range || !blk.contains(range.startContainer)) return raw.length;
-  const pre = document.createRange();
-  pre.selectNodeContents(blk);
-  pre.setEnd(range.startContainer, range.startOffset);
-  const want = pre.toString().replace(/\s/g, '');
-  let j = 0;
-  for (let i = 0; i < raw.length; i++) {
-    if (j >= want.length) return i;
-    if (raw[i] === want[j]) j++;
-  }
-  return raw.length;
-}
-
-live.root.addEventListener('mousedown', (e) => {
-  if (e.button !== 0 || e.target.closest('.lp-editor, a, input, button, summary')) return;
-  if (!canEdit(S.notes.get(S.currentId))) return;
-  const blk = e.target.closest('.lp-block');
-  if (blk) {
+// Clicking the empty space around the text puts the cursor at the end.
+el.live.addEventListener('mousedown', (e) => {
+  if (e.target === el.live && canEdit(S.notes.get(S.currentId))) {
     e.preventDefault();
-    const [start, end] = liveRangeOf(blk);
-    liveGo(start, end, caretFromPoint(blk, e.clientX, e.clientY, el.text.value.slice(start, end)));
-    return;
-  }
-  const blocks = $$('.lp-block', live.root);
-  const last = blocks[blocks.length - 1];
-  if (!last || e.clientY > last.getBoundingClientRect().bottom) {
-    e.preventDefault();
-    liveActivateEnd();
+    wys.focus('end');
   }
 });
-
-live.root.addEventListener('change', (e) => {
-  const cb = e.target.closest('input[data-task]');
-  const blk = cb?.closest('.lp-block');
-  if (!blk || !canEdit(S.notes.get(S.currentId))) return;
-  const [start, end] = liveRangeOf(blk);
-  const src = el.text.value;
-  el.text.value = src.slice(0, start) + toggleTask(src.slice(start, end), Number(cb.dataset.task)) + src.slice(end);
-  markDirty();
-  renderLive(true);
-});
-
-live.ta.addEventListener('input', () => {
-  const src = el.text.value;
-  el.text.value = src.slice(0, live.start) + live.ta.value + src.slice(live.end);
-  live.end = live.start + live.ta.value.length;
-  liveAutosize();
-  markDirty();
-  updateSuggest();
-});
-live.ta.addEventListener('click', updateSuggest);
-live.ta.addEventListener('blur', () => {
-  setTimeout(() => {
-    if (live.active && document.activeElement !== live.ta && document.hasFocus()) liveDeactivate();
-  }, 120);
-});
-
-live.ta.addEventListener('keydown', (e) => {
-  if (!sug.el.classList.contains('hidden')) return editorKeydown(e);
-  const ta = live.ta;
-  const v = ta.value;
-  const s = ta.selectionStart;
-  const t = ta.selectionEnd;
-  const plain = !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    ta.blur();
-    liveDeactivate();
-    return;
-  }
-  if (plain && ((e.key === 'ArrowUp' && !v.slice(0, s).includes('\n')) || (e.key === 'ArrowLeft' && s === 0 && t === 0))) {
-    const prev = liveNeighbor(-1);
-    if (prev) {
-      e.preventDefault();
-      liveGo(prev.start, prev.end, 'end');
-    }
-    return;
-  }
-  if (plain && ((e.key === 'ArrowDown' && !v.slice(t).includes('\n')) || (e.key === 'ArrowRight' && s === v.length && t === v.length))) {
-    const next = liveNeighbor(1);
-    if (next) {
-      e.preventDefault();
-      liveGo(next.start, next.end, 0);
-    }
-    return;
-  }
-  if (plain && e.key === 'Backspace' && s === 0 && t === 0) {
-    const prev = liveNeighbor(-1);
-    if (!prev) return;
-    e.preventDefault();
-    if (!v.trim()) return liveGo(prev.start, prev.end, 'end');
-    // merge into the previous block (joined by a line break)
-    const src = el.text.value;
-    const len = live.end - live.start;
-    el.text.value = `${src.slice(0, prev.end)}\n${src.slice(live.start)}`;
-    live.active = false;
-    live.ta.hidden = true;
-    markDirty();
-    const prevLen = prev.end - prev.start;
-    liveActivate(prev.start, prev.start + prevLen + 1 + len, prevLen + 1);
-    return;
-  }
-  editorKeydown(e);
-  if (e.defaultPrevented) return;
-  // Enter on an empty last line finishes this block and starts a new one below (not inside code fences).
-  if (plain && e.key === 'Enter' && s === t && s === v.length && v.endsWith('\n') && !/^\s*(```|~~~)/.test(v)) {
-    e.preventDefault();
-    const src = el.text.value;
-    const at = live.start + v.replace(/\n+$/, '').length;
-    const rest = src.slice(live.end).replace(/^\n+/, '');
-    el.text.value = `${src.slice(0, at)}\n\n${rest ? `\n\n${rest}` : ''}`;
-    live.active = false;
-    live.ta.hidden = true;
-    markDirty();
-    liveActivate(at + 2, at + 2, 0);
-  }
-});
-
 // ---------------------------------------------------- formatting
 function replaceRange(start, end, text, selStart, selEnd) {
   ed().focus();
@@ -1375,11 +1200,18 @@ const FORMATS = {
 };
 
 $('#toolbar').addEventListener('mousedown', (e) => e.preventDefault());
-$('#toolbar').addEventListener('click', (e) => {
+$('#toolbar').addEventListener('click', async (e) => {
   const b = e.target.closest('[data-fmt]');
   if (!b || el.text.readOnly) return;
-  if (S.mode === 'live' && !live.active) liveActivateEnd();
-  FORMATS[b.dataset.fmt]();
+  const fmt = b.dataset.fmt;
+  if (!inWys()) return FORMATS[fmt]();
+  if (fmt === 'link') {
+    const url = await promptDialog(wys.isActive('link') ? 'Edit link (leave empty to remove)' : 'Insert link', { placeholder: 'https://', value: '', okText: 'Apply' });
+    if (url !== null) wys.exec('link', url && !/^[a-z][\w+.-]*:/i.test(url) ? `https://${url}` : url);
+    return;
+  }
+  wys.exec(fmt);
+  if (fmt === 'wikilink') updateSuggest();
 });
 
 function editorKeydown(e) {
@@ -1435,12 +1267,21 @@ function caretCoords(ta, pos) {
 }
 
 function updateSuggest() {
-  const pos = ed().selectionStart;
-  const before = ed().value.slice(0, pos);
-  const m = /\[\[([^\]\n|#]*)$/.exec(before);
-  if (!m || ed().selectionStart !== ed().selectionEnd) return hideSuggest();
+  let before;
+  let pos = 0;
+  if (inWys()) {
+    if (!wys.hasFocus()) return hideSuggest();
+    before = wys.textBeforeCursor();
+  } else {
+    if (document.activeElement !== el.text || ed().selectionStart !== ed().selectionEnd) return hideSuggest();
+    pos = ed().selectionStart;
+    before = ed().value.slice(0, pos);
+  }
+  const m = /\[\[([^\]\n|#\ufffc]*)$/.exec(before);
+  if (!m) return hideSuggest();
   const q = m[1].toLowerCase();
   sug.start = pos - m[1].length;
+  sug.back = m[0].length;
   const notes = [...S.notes.values()].filter((n) => !n.trashed && n.id !== S.currentId && n.title);
   const scored = notes
     .map((n) => {
@@ -1457,7 +1298,7 @@ function updateSuggest() {
   if (!scored.length) return hideSuggest();
   sug.active = 0;
   renderSuggest();
-  const c = caretCoords(ed(), pos);
+  const c = inWys() ? wys.cursorCoords() : caretCoords(ed(), pos);
   sug.el.style.top = `${Math.min(c.top + 4, window.innerHeight - 270)}px`;
   sug.el.style.left = `${Math.min(c.left, window.innerWidth - 370)}px`;
   sug.el.classList.remove('hidden');
@@ -1473,6 +1314,11 @@ function hideSuggest() {
 function pickSuggest(i) {
   const it = sug.items[i];
   if (!it) return;
+  if (inWys()) {
+    hideSuggest();
+    wys.insertWikiLink(sug.back, it.title);
+    return;
+  }
   const pos = ed().selectionStart;
   const after = ed().value.slice(pos, pos + 2) === ']]' ? '' : ']]';
   replaceRange(sug.start, pos, it.title + after);
@@ -2301,6 +2147,7 @@ async function openHistory(id) {
       if (S.currentId !== id) return;
       el.title.value = v.title;
       el.text.value = v.content;
+      syncEditor(true);
       markDirty();
       renderPreview();
       m.close();
