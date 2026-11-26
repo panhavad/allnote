@@ -8,6 +8,7 @@ import { sessionMiddleware } from './sessions.js';
 import { authRouter } from './auth.js';
 import { notesRouter } from './notes.js';
 import { publicRouter } from './public.js';
+import { googleSettings } from './settings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -92,6 +93,6 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`${config.appName} listening on :${config.port} (public URL ${config.publicUrl})`);
-  console.log(`Google SSO: ${config.google.enabled ? `enabled, callback ${config.google.callbackUrl}` : 'disabled (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET)'}`);
+  console.log(`${config.appName} listening on :${config.port} (public URL ${config.publicUrl || 'derived from requests'})`);
+  console.log(`Google SSO: ${googleSettings().enabled ? 'enabled' : 'disabled (admin can configure it in Settings > Administration)'}`);
 });

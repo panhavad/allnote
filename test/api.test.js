@@ -80,6 +80,35 @@ test('server TOTP matches the RFC 6238 SHA-1 test vector', async () => {
   assert.equal(totpCode(secret, 1111111109_000), '081804');
 });
 
+test('first account becomes admin and manages sign-up and Google SSO in settings', async () => {
+  const anon = client();
+  assert.equal((await anon('GET', '/api/config')).data.setupRequired, true);
+  const admin = client();
+  assert.equal((await admin('POST', '/api/auth/register', { email: 'admin@x.io', password: 'password123' })).data.user.isAdmin, true);
+  const user = client();
+  assert.equal((await user('POST', '/api/auth/register', { email: 'user@x.io', password: 'password123' })).data.user.isAdmin, false);
+  assert.equal((await anon('GET', '/api/config')).data.setupRequired, false);
+  assert.equal((await user('GET', '/api/admin/settings')).status, 403);
+  assert.equal((await user('PUT', '/api/admin/settings', { allowSignup: false })).status, 403);
+
+  assert.equal((await fetch(`${BASE}/auth/google`, { redirect: 'manual' })).status, 404);
+  const saved = await admin('PUT', '/api/admin/settings', { google: { clientId: 'cid.apps.googleusercontent.com', clientSecret: 'GOCSPX-test' } });
+  assert.equal(saved.data.google.enabled, true);
+  assert.ok(!JSON.stringify(saved.data).includes('GOCSPX-test'), 'secret is never sent back');
+  assert.equal((await anon('GET', '/api/config')).data.google, true);
+  const go = await fetch(`${BASE}/auth/google`, { redirect: 'manual' });
+  const loc = new URL(go.headers.get('location'));
+  assert.equal(loc.searchParams.get('client_id'), 'cid.apps.googleusercontent.com');
+  assert.equal(loc.searchParams.get('redirect_uri'), `${BASE}/auth/google/callback`);
+  const kept = await admin('PUT', '/api/admin/settings', { google: { clientId: 'cid2', clientSecret: '' } });
+  assert.equal(kept.data.google.enabled, true, 'empty secret keeps the stored one');
+  assert.equal((await admin('PUT', '/api/admin/settings', { google: null })).data.google.enabled, false);
+
+  await admin('PUT', '/api/admin/settings', { allowSignup: false });
+  assert.equal((await client()('POST', '/api/auth/register', { email: 'late@x.io', password: 'password123' })).status, 403);
+  await admin('PUT', '/api/admin/settings', { allowSignup: true });
+});
+
 test('auth, two-factor login and recovery codes', async () => {
   const a = client();
   assert.equal((await a('POST', '/api/auth/register', { email: 'a@x.io', password: 'password123', name: 'A' })).status, 200);

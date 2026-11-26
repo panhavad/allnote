@@ -2,7 +2,7 @@
 
 A simple, self-hosted web note app that combines the best of **Obsidian** (Markdown, `[[wiki links]]`, backlinks, graph view, tags, callouts, embeds) and **Evernote** (notebooks, pinned notes, sharing, publishing, version history) — with Google single sign-on, two-factor authentication, live collaboration and PIN-protected publishing.
 
-Deploys with one `docker compose up` and **automatically redeploys itself whenever you push to your private GitHub repository**.
+Deploys with one `docker compose up` behind your tunnel; the first account becomes the admin, who configures Google sign-in from the UI.
 
 ## Features
 
@@ -40,80 +40,40 @@ npm test             # API + TOTP tests
 
 Data is stored in `./data` by default (`DATA_DIR`).
 
-## Deploy with Docker Compose + auto-update from private GitHub
+## Deploy with Docker Compose (behind a tunnel)
 
-### 1. Put the code in a private GitHub repository
-
-```bash
-git init -b main
-git add -A
-git commit -m "Initial commit"
-git remote add origin https://github.com/<you>/allnote.git   # private repo
-git push -u origin main
-```
-
-### 2. Create a GitHub token (read-only)
-
-GitHub → *Settings → Developer settings → Fine-grained personal access tokens* → **Generate new token**
-- Repository access: *Only select repositories* → your `allnote` repo
-- Permissions: **Contents: Read-only**
-
-### 3. On the server
+The image is built locally from this folder (nothing is pulled from Docker Hub) and no host ports are published: the `app` container joins the external Docker network **`tunnel_net`**, and your tunnel (e.g. `cloudflared` on the same network) forwards traffic to `http://app:3000` (or `http://allnote-app-1:3000`).
 
 ```bash
-git clone https://github.com/<you>/allnote.git   # username + token when prompted
+git clone https://github.com/<you>/allnote.git
 cd allnote
-cp .env.example .env    # then edit .env
+cp .env.example .env               # optional, defaults work
+docker network create tunnel_net   # only if it doesn't exist yet
 docker compose up -d --build
 ```
 
-Minimum `.env`:
+To update after a `git pull`, run `docker compose up -d --build` again; notes live in the `allnote-data` volume.
 
-```dotenv
-PUBLIC_URL=https://notes.example.com
-GITHUB_USERNAME=<you>
-GITHUB_TOKEN=github_pat_xxx
-GITHUB_REPO=<you>/allnote
-GITHUB_BRANCH=main
-GITHUB_WEBHOOK_SECRET=<openssl rand -hex 20>
-```
+### First run: create the admin
 
-Two containers start:
+On a fresh install the sign-in page asks you to **create the first account — it becomes the administrator**. Every account created after that is a normal user. (On an existing install without an admin, the oldest account is promoted automatically.)
 
-| Service | Port | Purpose |
-| --- | --- | --- |
-| `app` | `APP_PORT` (3000) | the web app; data in the `allnote-data` volume |
-| `updater` | `WEBHOOK_PORT` (9000) | receives GitHub webhooks / polls, runs `git fetch` + `git reset --hard` in the deployment folder, then `docker compose up -d --build app` |
-
-### 4. Add the GitHub webhook (instant updates)
-
-Repository → *Settings → Webhooks → Add webhook*
-- **Payload URL:** `https://<your-server>:9000/hooks/github` (or proxy `/hooks/github` to port 9000)
-- **Content type:** `application/json`
-- **Secret:** the same value as `GITHUB_WEBHOOK_SECRET`
-- **Events:** *Just the push event*
-
-Signatures (`X-Hub-Signature-256`) are verified; unsigned or mismatched requests get `401`. If the server is not reachable from GitHub, the updater also **polls** every `POLL_INTERVAL` seconds (default 60, `0` disables). Check status at `http://<server>:9000/health`.
-
-Now every `git push` to `main` rebuilds and restarts the app automatically. Notes are kept in the Docker volume, and open browsers reconnect and resync on their own.
-
-> The token is sent as an HTTP header per git command and is never written to `.git/config` or logs. Only the `updater` container receives GitHub variables; only the `app` container receives app/Google secrets. The updater mounts the Docker socket (required to rebuild) — expose port 9000 only for the webhook. Local edits to tracked files in the deployment folder are overwritten on update; keep configuration in `.env`. Changes to `updater/` itself need a manual `docker compose up -d --build updater`.
+The admin gets an **Administration** section in *Settings* (gear icon, bottom-left) to:
+- allow or block new sign-ups,
+- configure Google single sign-on (below).
 
 ## Google single sign-on
 
+Configured in the app by the admin — no environment variables or restart needed.
+
 1. [Google Cloud Console](https://console.cloud.google.com/) → *APIs & Services → OAuth consent screen* → configure (External/Internal).
 2. *Credentials → Create credentials → OAuth client ID* → **Web application**.
-3. **Authorized redirect URI:** your callback, e.g. `https://notes.example.com/auth/google/callback`.
-4. Put the values in `.env`:
+3. **Authorized redirect URI:** copy it from *Settings → Administration* (e.g. `https://notes.example.com/auth/google/callback`).
+4. Paste the **Client ID** and **Client secret** into *Settings → Administration* and save.
 
-```dotenv
-GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
-GOOGLE_CALLBACK_URL=https://notes.example.com/auth/google/callback
-```
+The *Continue with Google* button appears as soon as both values are saved. The secret is stored in the database and never sent back to the browser (leave the field empty to keep it). Accounts are matched by verified email, so a user can use password and Google interchangeably. If 2FA is enabled, Google sign-in still asks for the code.
 
-The *Continue with Google* button appears automatically once both ID and secret are set. Accounts are matched by verified email, so a user can use password and Google interchangeably. If 2FA is enabled, Google sign-in still asks for the code.
-
+> The redirect URI is derived from `PUBLIC_URL`, or — if that is empty — from the request (`Host` + `X-Forwarded-Proto` sent by the tunnel). Set `PUBLIC_URL` if the shown URI isn't your public address.
 ## Two-factor authentication
 
 *Account (bottom-left) → Two-factor authentication → Enable 2FA* → scan the QR code with any TOTP app (Google/Microsoft Authenticator, 1Password, Authy…) → enter the code. You get 8 one-time recovery codes. Enabling 2FA or changing the password signs out other sessions.
@@ -127,18 +87,13 @@ Open a note → **Publish** → toggle on. Copy the link (`/p/<link>`, customisa
 | Variable | Default | Description |
 | --- | --- | --- |
 | `APP_NAME` | `AllNote` | Name shown in the UI and authenticator apps |
-| `APP_PORT` | `3000` | Host port for the app (compose) |
-| `PUBLIC_URL` | `http://localhost:3000` | External URL; `https://` enables secure cookies |
+| `PUBLIC_URL` | *(empty = from request)* | External URL, e.g. `https://notes.example.com`; used for the Google redirect URI |
 | `SESSION_SECRET` | auto-generated | Signs PIN-unlock cookies (persisted in the data volume if empty) |
 | `SESSION_DAYS` | `30` | Session lifetime |
-| `ALLOW_SIGNUP` | `true` | Allow new accounts |
+| `COOKIE_SECURE` | auto | Secure cookies; defaults to HTTPS of `PUBLIC_URL` or the request |
+| `ALLOW_SIGNUP` | `true` | Initial value; the admin can change it in *Settings → Administration* |
 | `ALLOWED_EMAILS` | *(empty = anyone)* | e.g. `alice@x.com,@mycompany.com` |
-| `TRUST_PROXY` | private ranges | Express trust-proxy setting when behind a reverse proxy |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` | | Google SSO |
-| `GITHUB_USERNAME` / `GITHUB_TOKEN` / `GITHUB_REPO` / `GITHUB_BRANCH` | | Private repo to deploy from |
-| `GITHUB_WEBHOOK_SECRET` | | Webhook HMAC secret (webhook disabled if empty) |
-| `POLL_INTERVAL` | `60` | Seconds between polls, `0` = webhook only |
-| `WEBHOOK_PORT` | `9000` | Host port for the updater |
+| `TRUST_PROXY` | private ranges | Express trust-proxy setting (the tunnel on `tunnel_net` is a private range) |
 
 ## Keyboard shortcuts
 
@@ -169,6 +124,5 @@ public/           Single-page app (vanilla ES modules, no build step)
   js/merge.js     3-way merge (diff-match-patch)
   js/graph.js     Force-directed graph on canvas
   publish.html    Public page for published notes
-updater/          Auto-deploy service (GitHub webhook + polling)
 test/             node:test API tests
 ```

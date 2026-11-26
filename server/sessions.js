@@ -38,6 +38,7 @@ export function publicUser(u) {
     hasPassword: Boolean(u.password_hash),
     google: Boolean(u.google_id),
     twoFactorEnabled: Boolean(u.totp_enabled),
+    isAdmin: Boolean(u.is_admin),
   };
 }
 
@@ -59,6 +60,12 @@ export function sessionMiddleware(req, _res, next) {
 
 export function requireAuth(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Not signed in' });
+  next();
+}
+
+export function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Not signed in' });
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   next();
 }
 

@@ -17,30 +17,30 @@ function loadSessionSecret() {
 }
 
 const port = Number(env.PORT || 3000);
-const publicUrl = (env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/+$/, '');
+const publicUrl = (env.PUBLIC_URL || '').replace(/\/+$/, '');
 
 export const config = {
   appName: env.APP_NAME || 'AllNote',
   port,
+  // Empty = derive from each request (Host + X-Forwarded-Proto), e.g. behind a tunnel.
   publicUrl,
   sessionSecret: loadSessionSecret(),
   sessionDays: Number(env.SESSION_DAYS || 30),
-  cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : publicUrl.startsWith('https://'),
+  // null = decide per request (HTTPS, including X-Forwarded-Proto from a trusted proxy/tunnel).
+  cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : (publicUrl ? publicUrl.startsWith('https://') : null),
   trustProxy: env.TRUST_PROXY || 'loopback, linklocal, uniquelocal',
+  // Initial default only; the admin can change it in the UI (stored in the settings table).
   allowSignup: env.ALLOW_SIGNUP !== 'false',
   // Comma separated list of emails and/or "@domain.com" entries. Empty = everyone.
   allowedEmails: (env.ALLOWED_EMAILS || '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
-  google: {
-    clientId: env.GOOGLE_CLIENT_ID || '',
-    clientSecret: env.GOOGLE_CLIENT_SECRET || '',
-    callbackUrl: env.GOOGLE_CALLBACK_URL || `${publicUrl}/auth/google/callback`,
-  },
 };
 
-config.google.enabled = Boolean(config.google.clientId && config.google.clientSecret);
+export function baseUrl(req) {
+  return config.publicUrl || `${req.protocol}://${req.get('host')}`;
+}
 
 export function emailAllowed(email) {
   if (!config.allowedEmails.length) return true;

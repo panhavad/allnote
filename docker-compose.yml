@@ -3,44 +3,25 @@ name: allnote
 services:
   app:
     build: .
-    image: allnote-app:latest
     restart: unless-stopped
-    ports:
-      - "${APP_PORT:-3000}:3000"
     environment:
       APP_NAME: ${APP_NAME:-AllNote}
-      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      # Leave empty to derive the URL from the incoming request (works behind the tunnel).
+      PUBLIC_URL: ${PUBLIC_URL:-}
       SESSION_SECRET: ${SESSION_SECRET:-}
       SESSION_DAYS: ${SESSION_DAYS:-30}
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       TRUST_PROXY: ${TRUST_PROXY:-loopback, linklocal, uniquelocal}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL:-}
     volumes:
       - allnote-data:/data
+    networks:
+      - tunnel_net
 
-  # Pulls the private GitHub repo and rebuilds "app" on every push (webhook) or poll.
-  updater:
-    build: ./updater
-    image: allnote-updater:latest
-    restart: unless-stopped
-    ports:
-      - "${WEBHOOK_PORT:-9000}:9000"
-    environment:
-      GITHUB_USERNAME: ${GITHUB_USERNAME:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      GITHUB_REPO: ${GITHUB_REPO:-}
-      GITHUB_BRANCH: ${GITHUB_BRANCH:-main}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-      POLL_INTERVAL: ${POLL_INTERVAL:-60}
-      COMPOSE_PROJECT_NAME: allnote
-      REPO_DIR: /repo
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/repo
+networks:
+  tunnel_net:
+    external: true
 
 volumes:
   allnote-data:

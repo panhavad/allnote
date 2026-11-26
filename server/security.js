@@ -125,7 +125,7 @@ export function parseCookies(header = '') {
 export function setCookie(res, name, value, { maxAgeMs, path = '/', httpOnly = true } = {}) {
   const parts = [`${name}=${encodeURIComponent(value)}`, `Path=${path}`, 'SameSite=Lax'];
   if (httpOnly) parts.push('HttpOnly');
-  if (config.cookieSecure) parts.push('Secure');
+  if (config.cookieSecure ?? res.req?.secure) parts.push('Secure');
   if (maxAgeMs !== undefined) parts.push(`Max-Age=${Math.floor(maxAgeMs / 1000)}`);
   res.append('Set-Cookie', parts.join('; '));
 }

@@ -42,7 +42,7 @@ async function boot() {
   const err = new URLSearchParams(location.search).get('error');
   if (err) history.replaceState(null, '', location.pathname + location.hash);
   if (me.user) return startApp(me.user);
-  showAuth(me.twoFactorRequired ? '2fa' : 'login', err);
+  showAuth(me.twoFactorRequired ? '2fa' : (S.config.setupRequired ? 'register' : 'login'), err);
 }
 
 // ============================================================ auth screen
@@ -51,12 +51,17 @@ function showAuth(mode = 'login', error = '') {
   $('#auth').classList.remove('hidden');
   ['login', 'register', 'twofa'].forEach((m) => $(`#${m}-form`).classList.toggle('hidden', m !== (mode === '2fa' ? 'twofa' : mode)));
   $('#google-block').classList.toggle('hidden', !S.config.google || mode === '2fa');
+  const setup = S.config.setupRequired && mode === 'register';
+  $('#auth-sub').textContent = setup
+    ? 'Welcome! Create the first account — it becomes the administrator.'
+    : 'Linked notes, shared and published from anywhere.';
+  $('#register-form button[type=submit]').textContent = setup ? 'Create admin account' : 'Create account';
   const errBox = $('#auth-error');
   errBox.textContent = error || '';
   errBox.classList.toggle('hidden', !error);
   const sw = $('#auth-switch');
   if (mode === 'login') sw.innerHTML = S.config.allowSignup ? 'No account yet? <a href="#" data-go="register">Create one</a>' : '';
-  else if (mode === 'register') sw.innerHTML = 'Already have an account? <a href="#" data-go="login">Sign in</a>';
+  else if (mode === 'register') sw.innerHTML = setup ? '' : 'Already have an account? <a href="#" data-go="login">Sign in</a>';
   else sw.innerHTML = '';
   setTimeout(() => $(`#${mode === '2fa' ? 'twofa' : mode}-form input`)?.focus(), 0);
 }
@@ -86,7 +91,11 @@ function authSubmit(form, fn) {
 
 const afterLogin = (r) => (r.twoFactorRequired ? showAuth('2fa') : startApp(r.user));
 authSubmit($('#login-form'), async (d) => afterLogin(await post('/api/auth/login', d)));
-authSubmit($('#register-form'), async (d) => afterLogin(await post('/api/auth/register', d)));
+authSubmit($('#register-form'), async (d) => {
+  const r = await post('/api/auth/register', d);
+  S.config.setupRequired = false;
+  afterLogin(r);
+});
 authSubmit($('#twofa-form'), async (d) => startApp((await post('/api/auth/2fa', d)).user));
 $('#twofa-cancel').addEventListener('click', async () => {
   await post('/api/auth/logout').catch(() => {});
@@ -1959,7 +1968,28 @@ function openAccount() {
       <div class="row" style="flex-wrap:wrap">
         <button class="btn" id="exp-all">${icon('download', 15)} Export all notes (JSON)</button>
         <label class="btn">${icon('upload', 15)} Import Markdown files<input type="file" id="imp" accept=".md,.markdown,.txt" multiple hidden></label>
-      </div>`;
+      </div>
+      ${u.isAdmin ? `<div class="section-title">${icon('settings', 18)} Administration <span class="badge">Admin</span></div><div id="admin"><span class="muted">Loading…</span></div>` : ''}`;
+    if (u.isAdmin) renderAdmin();
+  };
+  let admin = null;
+  const renderAdmin = async () => {
+    const box = $('#admin', m.el);
+    if (!box) return;
+    if (!admin) {
+      try { admin = await get('/api/admin/settings'); } catch (err) { box.innerHTML = `<span class="muted">${esc(err.message)}</span>`; return; }
+    }
+    const g = admin.google;
+    box.innerHTML = `<div class="stack">
+      <div class="card"><label class="switch"><input type="checkbox" id="adm-signup" ${admin.allowSignup ? 'checked' : ''}> Allow new users to create accounts</label></div>
+      <form class="card form" id="f-google" autocomplete="off">
+        <div><b>Google single sign-on</b> ${g.enabled ? '<span class="badge">Enabled</span>' : '<small class="muted">(not configured)</small>'}<br>
+        <small class="muted">Google Cloud Console → APIs &amp; Services → Credentials → <i>OAuth client ID</i> (Web application). Add this <b>Authorized redirect URI</b>:</small></div>
+        <div class="row"><input readonly value="${esc(g.redirectUri)}" id="adm-redirect"><button type="button" class="btn" id="adm-copy">${icon('copy', 15)} Copy</button></div>
+        <label>Client ID<input name="clientId" value="${esc(g.clientId)}" placeholder="1234567890-abc.apps.googleusercontent.com" spellcheck="false"></label>
+        <label>Client secret<input name="clientSecret" type="password" placeholder="${g.hasSecret ? 'Saved — leave empty to keep it' : 'GOCSPX-…'}" autocomplete="new-password" spellcheck="false"></label>
+        <div class="row"><button class="btn primary">Save Google settings</button>${g.enabled || g.clientId ? '<button type="button" class="btn danger" id="adm-google-off">Remove</button>' : ''}</div>
+      </form></div>`;
   };
   const updateMe = (user) => {
     S.me = user;
@@ -1974,6 +2004,13 @@ function openAccount() {
       if (f.id === 'f-name') { updateMe((await put('/api/account', d)).user); toast('Name updated'); }
       if (f.id === 'f-pass') { updateMe((await post('/api/account/password', d)).user); toast('Password saved; other sessions were signed out'); }
       if (f.id === 'f-2fa-off') { updateMe((await post('/api/account/2fa/disable', d)).user); toast('Two-factor authentication disabled'); }
+      if (f.id === 'f-google') {
+        if (d.clientId.trim() && !d.clientSecret.trim() && !admin.google.hasSecret) throw new Error('Enter the client secret');
+        admin = await put('/api/admin/settings', { google: d });
+        S.config.google = admin.google.enabled;
+        renderAdmin();
+        toast(admin.google.enabled ? 'Google sign-in enabled' : 'Google settings saved');
+      }
       if (f.id === 'f-2fa-on') {
         const r = await post('/api/account/2fa/enable', d);
         S.me = r.user;
@@ -1989,6 +2026,18 @@ function openAccount() {
     }
   });
   m.el.addEventListener('click', async (e) => {
+    if (e.target.closest('#adm-copy')) copyText($('#adm-redirect', m.el).value);
+    if (e.target.closest('#adm-google-off')) {
+      if (!(await confirmDialog('Remove Google sign-in? Users can no longer sign in with Google until it is configured again. Accounts with a password are not affected.', { okText: 'Remove', danger: true }))) return;
+      try {
+        admin = await put('/api/admin/settings', { google: null });
+        S.config.google = false;
+        renderAdmin();
+        toast('Google sign-in removed');
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }
     if (e.target.closest('#tfa-start')) {
       try {
         const r = await post('/api/account/2fa/setup');
@@ -2006,6 +2055,17 @@ function openAccount() {
     }
   });
   m.el.addEventListener('change', async (e) => {
+    if (e.target.id === 'adm-signup') {
+      try {
+        admin = await put('/api/admin/settings', { allowSignup: e.target.checked });
+        S.config.allowSignup = admin.allowSignup;
+        toast(admin.allowSignup ? 'Sign up enabled' : 'Sign up disabled');
+      } catch (err) {
+        e.target.checked = !e.target.checked;
+        toast(err.message, 'error');
+      }
+      return;
+    }
     if (e.target.id !== 'imp') return;
     const files = [...e.target.files];
     for (const f of files) {

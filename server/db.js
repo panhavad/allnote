@@ -72,7 +72,20 @@ CREATE TABLE IF NOT EXISTS publications (
   pin_version INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
+
+if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'is_admin')) {
+  db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
+}
+// Existing installs without an admin: the earliest account becomes the admin.
+if (!db.prepare('SELECT 1 FROM users WHERE is_admin = 1').get()) {
+  db.prepare('UPDATE users SET is_admin = 1 WHERE id = (SELECT id FROM users ORDER BY created_at, rowid LIMIT 1)').run();
+}
 
 export function tx(fn) {
   db.exec('BEGIN IMMEDIATE');

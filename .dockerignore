@@ -5,6 +5,5 @@ data
 !.env.example
 .git
 test
-updater
 *.md
 docker-compose*.yml

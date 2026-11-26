@@ -8,14 +8,20 @@ import {
   rateLimit, resetRateLimit, setCookie, clearCookie,
 } from './security.js';
 import {
-  createSession, destroySession, destroyOtherSessions, publicUser, requireAuth,
+  createSession, destroySession, destroyOtherSessions, publicUser, requireAuth, requireAdmin,
 } from './sessions.js';
+import {
+  getSetting, setSetting, googleSettings, googleRedirectUri, hasUsers, signupAllowed,
+} from './settings.js';
 
 export const authRouter = express.Router();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const getUserByEmail = db.prepare('SELECT * FROM users WHERE email = ?');
 const getUserById = db.prepare('SELECT * FROM users WHERE id = ?');
+// Atomic: the first account ever created becomes the admin.
+const insertUser = db.prepare(`INSERT INTO users (id, email, name, avatar, password_hash, google_id, created_at, is_admin)
+  VALUES (?, ?, ?, ?, ?, ?, ?, NOT EXISTS (SELECT 1 FROM users))`);
 
 function loginResponse(res, user) {
   if (user.totp_enabled) {
@@ -27,21 +33,20 @@ function loginResponse(res, user) {
 }
 
 authRouter.get('/api/config', (_req, res) => {
-  res.json({ appName: config.appName, google: config.google.enabled, allowSignup: config.allowSignup });
+  res.json({ appName: config.appName, google: googleSettings().enabled, allowSignup: signupAllowed(), setupRequired: !hasUsers() });
 });
 
 authRouter.post('/api/auth/register', (req, res) => {
   const { email: rawEmail, password, name } = req.body || {};
   const email = String(rawEmail || '').trim().toLowerCase();
-  if (!config.allowSignup) return res.status(403).json({ error: 'Sign up is disabled' });
+  if (!signupAllowed()) return res.status(403).json({ error: 'Sign up is disabled' });
   if (!rateLimit(`reg:${req.ip}`, 10, 3600_000)) return res.status(429).json({ error: 'Too many attempts, try later' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Invalid email' });
   if (!emailAllowed(email)) return res.status(403).json({ error: 'This email is not allowed' });
   if (typeof password !== 'string' || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   if (getUserByEmail.get(email)) return res.status(409).json({ error: 'An account with this email already exists' });
   const id = newId();
-  db.prepare('INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(id, email, String(name || email.split('@')[0]).slice(0, 80), hashSecret(password), now());
+  insertUser.run(id, email, String(name || email.split('@')[0]).slice(0, 80), null, hashSecret(password), null, now());
   res.json(loginResponse(res, getUserById.get(id)));
 });
 
@@ -138,17 +143,45 @@ authRouter.post('/api/account/2fa/disable', requireAuth, (req, res) => {
   res.json({ user: publicUser(getUserById.get(req.user.id)) });
 });
 
-// ---------- Google single sign-on (OpenID Connect authorization code flow) ----------
-const callbackPath = new URL(config.google.callbackUrl).pathname;
+// ---------- admin settings ----------
+function adminSettings(req) {
+  const g = googleSettings();
+  return {
+    allowSignup: getSetting('allow_signup', String(config.allowSignup)) === 'true',
+    google: { clientId: g.clientId, hasSecret: Boolean(g.clientSecret), enabled: g.enabled, redirectUri: googleRedirectUri(req) },
+  };
+}
 
-authRouter.get('/auth/google', (_req, res) => {
-  if (!config.google.enabled) return res.status(404).send('Google sign-in is not configured');
+authRouter.get('/api/admin/settings', requireAdmin, (req, res) => res.json(adminSettings(req)));
+
+authRouter.put('/api/admin/settings', requireAdmin, (req, res) => {
+  const { allowSignup, google } = req.body || {};
+  if (allowSignup !== undefined) setSetting('allow_signup', allowSignup ? 'true' : 'false');
+  if (google === null) {
+    setSetting('google_client_id', '');
+    setSetting('google_client_secret', '');
+  } else if (google && typeof google === 'object') {
+    const clientId = String(google.clientId ?? '').trim();
+    const clientSecret = String(google.clientSecret ?? '').trim();
+    if (clientId.length > 300 || clientSecret.length > 300) return res.status(400).json({ error: 'Value is too long' });
+    setSetting('google_client_id', clientId);
+    // Empty secret keeps the stored one, so the admin doesn't have to re-enter it.
+    if (clientSecret) setSetting('google_client_secret', clientSecret);
+    else if (!clientId) setSetting('google_client_secret', '');
+  }
+  res.json(adminSettings(req));
+});
+
+// ---------- Google single sign-on (OpenID Connect authorization code flow) ----------
+authRouter.get('/auth/google', (req, res) => {
+  const google = googleSettings();
+  if (!google.enabled) return res.status(404).send('Google sign-in is not configured');
   const state = crypto.randomBytes(16).toString('hex');
   const nonce = crypto.randomBytes(16).toString('hex');
   setCookie(res, 'an_oauth', `${state}.${nonce}`, { maxAgeMs: 10 * 60_000 });
   const params = new URLSearchParams({
-    client_id: config.google.clientId,
-    redirect_uri: config.google.callbackUrl,
+    client_id: google.clientId,
+    redirect_uri: googleRedirectUri(req),
     response_type: 'code',
     scope: 'openid email profile',
     state,
@@ -158,10 +191,11 @@ authRouter.get('/auth/google', (_req, res) => {
   res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
 
-authRouter.get(callbackPath, async (req, res) => {
+authRouter.get('/auth/google/callback', async (req, res) => {
   const fail = (msg) => res.redirect(`/?error=${encodeURIComponent(msg)}`);
   try {
-    if (!config.google.enabled) return fail('Google sign-in is not configured');
+    const google = googleSettings();
+    if (!google.enabled) return fail('Google sign-in is not configured');
     const [state, nonce] = String(req.cookies.an_oauth || '').split('.');
     clearCookie(res, 'an_oauth');
     if (req.query.error) return fail(`Google: ${req.query.error}`);
@@ -172,9 +206,9 @@ authRouter.get(callbackPath, async (req, res) => {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code: String(req.query.code || ''),
-        client_id: config.google.clientId,
-        client_secret: config.google.clientSecret,
-        redirect_uri: config.google.callbackUrl,
+        client_id: google.clientId,
+        client_secret: google.clientSecret,
+        redirect_uri: googleRedirectUri(req),
         grant_type: 'authorization_code',
       }),
     });
@@ -184,7 +218,7 @@ authRouter.get(callbackPath, async (req, res) => {
     // The ID token came straight from Google's token endpoint over TLS, so its claims can be trusted
     // after checking audience, issuer, expiry and nonce (OIDC Core 3.1.3.7).
     const claims = JSON.parse(Buffer.from(tokens.id_token.split('.')[1], 'base64url').toString('utf8'));
-    if (claims.aud !== config.google.clientId) return fail('Invalid token audience');
+    if (claims.aud !== google.clientId) return fail('Invalid token audience');
     if (!['accounts.google.com', 'https://accounts.google.com'].includes(claims.iss)) return fail('Invalid token issuer');
     if (claims.exp * 1000 < Date.now()) return fail('Token expired');
     if (claims.nonce !== nonce) return fail('Invalid nonce');
@@ -197,10 +231,9 @@ authRouter.get(callbackPath, async (req, res) => {
     if (user) {
       db.prepare('UPDATE users SET google_id = ?, avatar = COALESCE(?, avatar) WHERE id = ?').run(claims.sub, claims.picture || null, user.id);
     } else {
-      if (!config.allowSignup) return fail('Sign up is disabled');
+      if (!signupAllowed()) return fail('Sign up is disabled');
       const id = newId();
-      db.prepare('INSERT INTO users (id, email, name, avatar, google_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(id, email, claims.name || email.split('@')[0], claims.picture || null, claims.sub, now());
+      insertUser.run(id, email, String(claims.name || email.split('@')[0]).slice(0, 80), claims.picture || null, null, claims.sub, now());
       user = getUserById.get(id);
     }
     loginResponse(res, getUserById.get(user.id));
